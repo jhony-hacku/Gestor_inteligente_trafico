@@ -1,0 +1,12 @@
+{
+  "receptor": {
+    "pull_port": 5561
+  },
+  "pc2": {
+    "host": "10.43.100.91",
+    "rep_port": 5563
+  },
+  "db": {
+    "ruta": "db/trafico_principal.db"
+  }
+}
