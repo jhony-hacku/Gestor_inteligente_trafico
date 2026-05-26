@@ -101,19 +101,16 @@ def main() -> None:
     signal.signal(signal.SIGINT,  _apagar)
     signal.signal(signal.SIGTERM, _apagar)
 
-    # Bucle interactivo en el hilo principal (lee stdin)
+    # Iniciar interfaz gráfica de usuario en el hilo principal
     monitor = next(s for s in servicios if isinstance(s, MonitorComandos))
+    
+    import tkinter as tk
+    from gui import MonitorGUI
+
     try:
-        while not stop_event.is_set():
-            try:
-                linea = input("PC3> ").strip()
-                if linea:
-                    continuar = monitor._procesar_comando_consola(linea)
-                    if not continuar:
-                        break
-            except EOFError:
-                # Sin terminal interactiva (ej. redireccion), solo esperar
-                time.sleep(1)
+        root = tk.Tk()
+        app = MonitorGUI(root, monitor, stop_event)
+        root.mainloop()
     except KeyboardInterrupt:
         pass
 
