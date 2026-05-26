@@ -7,6 +7,7 @@ from .motor_reglas import MotorReglas
 from .control_semaforos import ControlSemaforos
 from .persistencia import Persistencia
 from .servidor_control import ServidorControl
+from .servidor_consulta import ServidorConsulta
 
 __all__ = [
     "Suscriptor",
@@ -14,4 +15,5 @@ __all__ = [
     "ControlSemaforos",
     "Persistencia",
     "ServidorControl",
+    "ServidorConsulta",
 ]

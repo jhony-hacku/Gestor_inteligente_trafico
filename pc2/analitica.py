@@ -31,6 +31,7 @@ from servicios import (
     ControlSemaforos,
     MotorReglas,
     Persistencia,
+    ServidorConsulta,
     ServidorControl,
     Suscriptor,
 )
@@ -62,6 +63,7 @@ def _banner(config: dict) -> None:
     print(f"  PC1 (fuente)  : tcp://{config['pc1']['xpub_host']}:{config['pc1']['xpub_port']}")
     print(f"  PC3 (destino) : tcp://{config['pc3']['host']}:{config['pc3']['push_port']}")
     print(f"  Control REP   : tcp://*:{config['servidor_comandos']['rep_port']}")
+    print(f"  Consulta REP  : tcp://*:{config['servidor_consulta']['rep_port']} (failover PC3)")
     print()
     print("  Umbrales de congestion:")
     print(f"    Cola max         : {u['cola_max']} vehiculos")
@@ -88,13 +90,14 @@ def main() -> None:
     # Evento de parada compartido entre todos los hilos
     stop_event = threading.Event()
 
-    # Instanciar los cinco servicios
+    # Instanciar los seis servicios
     servicios: list[threading.Thread] = [
         Suscriptor(config, cola_eventos, stop_event),
         MotorReglas(config, cola_eventos, cola_semaforos, cola_persistencia, stop_event),
         ControlSemaforos(config, cola_semaforos, stop_event),
         Persistencia(config, cola_persistencia, stop_event),
         ServidorControl(config, cola_eventos, stop_event),
+        ServidorConsulta(config, stop_event),
     ]
 
     # Lanzar todos los hilos

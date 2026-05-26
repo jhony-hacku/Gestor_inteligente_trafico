@@ -6,6 +6,9 @@
     "host": "10.43.100.91",
     "rep_port": 5563
   },
+  "servidor_consulta_pc2": {
+    "port": 5564
+  },
   "db": {
     "ruta": "db/trafico_principal.db"
   }

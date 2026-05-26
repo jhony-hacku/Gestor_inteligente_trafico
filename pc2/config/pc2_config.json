@@ -10,6 +10,9 @@
   "servidor_comandos": {
     "rep_port": 5563
   },
+  "servidor_consulta": {
+    "rep_port": 5564
+  },
   "umbrales": {
     "cola_max": 5,
     "velocidad_min_kmh": 35.0,
