@@ -1,0 +1,25 @@
+{
+  "pc1": {
+    "xpub_host": "10.43.99.192",
+    "xpub_port": 5560
+  },
+  "pc3": {
+    "host": "10.43.99.78",
+    "push_port": 5561
+  },
+  "servidor_comandos": {
+    "rep_port": 5563
+  },
+  "umbrales": {
+    "cola_max": 5,
+    "velocidad_min_kmh": 35.0,
+    "densidad_max": 0.70,
+    "velocidad_ambulancia_kmh": 5.0,
+    "conteo_congestion_por_minuto": 240
+  },
+  "semaforo": {
+    "tiempo_verde_normal_seg": 15,
+    "tiempo_verde_congestion_seg": 30,
+    "tiempo_ola_verde_seg": 60
+  }
+}

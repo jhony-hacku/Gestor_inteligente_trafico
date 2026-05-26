@@ -1,0 +1,29 @@
+{
+  "ciudad": {
+    "nombre": "Ciudad Simulada",
+    "filas": 5,
+    "columnas": 5,
+    "labels_filas": ["A", "B", "C", "D", "E"]
+  },
+  "broker": {
+    "xsub_port": 5559,
+    "xpub_port": 5560
+  },
+  "tipos_sensor": {
+    "camara": {
+      "frecuencia_seg": 30,
+      "rango_cola": [0, 30],
+      "rango_velocidad": [5.0, 80.0]
+    },
+    "espira": {
+      "frecuencia_seg": 30,
+      "rango_conteo": [0, 120],
+      "intervalo_medicion_seg": 30
+    },
+    "gps": {
+      "frecuencia_seg": 30,
+      "rango_densidad": [0.0, 1.0],
+      "rango_velocidad": [0.0, 120.0]
+    }
+  }
+}
