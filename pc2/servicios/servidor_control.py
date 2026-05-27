@@ -20,8 +20,16 @@ viniera de un sensor, garantizando trazabilidad y timestamp consistente.
 import queue
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
 import zmq
+
+# Directorio de claves CurveZMQ de PC2 (relativo a este archivo)
+_KEYS_DIR    = Path(__file__).parent.parent / "keys"
+_CLIENTS_DIR = _KEYS_DIR / "clients"
+
+# Importar utilidades de criptografía (modo estricto: falla si faltan claves)
+from .cripto import cargar_clave_servidor, iniciar_authenticator
 
 
 class ServidorControl(threading.Thread):
@@ -63,13 +71,25 @@ class ServidorControl(threading.Thread):
 
     def run(self) -> None:
         ctx  = zmq.Context()
-        sock = ctx.socket(zmq.REP)
-        port = self.config["servidor_comandos"]["rep_port"]
-        sock.bind(f"tcp://*:{port}")
-        sock.setsockopt(zmq.RCVTIMEO, 1000)  # 1s timeout para verificar stop_event
 
-        print(f"[CONTROL] Servidor REP escuchando en tcp://*:{port}")
+        # 1. Iniciar ZAP authenticator — rechaza clientes no autorizados
+        #    ANTES de crear el socket (ZAP debe estar activo antes de bind)
+        auth = iniciar_authenticator(ctx, _CLIENTS_DIR)
+
+        # 2. Cargar clave del servidor y crear socket REP con CURVE
+        server_pub, server_sec = cargar_clave_servidor(_KEYS_DIR)
+        sock = ctx.socket(zmq.REP)
+        sock.curve_publickey = server_pub
+        sock.curve_secretkey = server_sec
+        sock.curve_server    = True           # activa el modo servidor CURVE
+
+        port = self.config["servidor_comandos"]["rep_port"]
+        sock.setsockopt(zmq.RCVTIMEO, 1000)  # 1s timeout para verificar stop_event
+        sock.bind(f"tcp://*:{port}")
+
+        print(f"[CONTROL] Servidor REP CurveZMQ escuchando en tcp://*:{port}")
         print(f"[CONTROL] Comandos aceptados: {self.COMANDOS_VALIDOS}")
+        print(f"[CONTROL] ZAP activo — clientes no autorizados serán rechazados")
 
         while not self.stop_event.is_set():
             try:
@@ -120,5 +140,6 @@ class ServidorControl(threading.Thread):
                         pass
 
         sock.close()
+        auth.stop()      # detener el hilo ZAP de forma limpia
         ctx.term()
         print("[CONTROL] Servidor de control detenido.")

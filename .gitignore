@@ -1,0 +1,13 @@
+# Bases de datos locales (generadas en runtime)
+pc2/replica/trafico.db
+pc3/db/trafico_principal.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+
+# Entornos virtuales
+.venv/
+venv/
+env/

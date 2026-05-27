@@ -37,6 +37,12 @@ from typing import Callable, TypeVar
 
 import zmq
 
+# Directorio de claves CurveZMQ de PC3 (relativo a este archivo)
+_KEYS_DIR = Path(__file__).parent.parent / "keys"
+
+# Importar utilidades de criptografía (modo estricto: falla si faltan claves)
+from .cripto import aplicar_curve_cliente
+
 
 # ---------------------------------------------------------------------------
 T = TypeVar("T")
@@ -89,11 +95,17 @@ class MonitorComandos(threading.Thread):
             self._sock_pc2.setsockopt(zmq.RCVTIMEO, 3000)
             self._sock_pc2.setsockopt(zmq.SNDTIMEO, 3000)
             self._sock_pc2.setsockopt(zmq.LINGER,   0)
+
+            # Aplicar CurveZMQ ANTES de connect() — falla si faltan claves
+            aplicar_curve_cliente(self._sock_pc2, _KEYS_DIR)
+
             host = self.config["pc2"]["host"]
             port = self.config["pc2"]["rep_port"]
             self._sock_pc2.connect(f"tcp://{host}:{port}")
-            print(f"[MONITOR] Conectado a PC2 tcp://{host}:{port}")
+            print(f"[MONITOR] Conectado a PC2 tcp://{host}:{port} (CurveZMQ)")
             return True
+        except SystemExit:
+            raise  # propagar fallo de claves sin capturar
         except Exception as exc:
             print(f"[MONITOR] No se pudo conectar a PC2: {exc}")
             return False
