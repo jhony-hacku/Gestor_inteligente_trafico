@@ -8,11 +8,16 @@ a los pings enviados por el HeartbeatCliente de PC2, permitiendo que PC2
 sepa con anticipación si la fuente de datos está operativa.
 
 Cada PONG informa:
-  - broker_ok        : si el hilo del Broker ZMQ (XSUB/XPUB) sigue vivo
+  - broker_ok        : si el Broker ZMQ sigue vivo
   - sensores_activos : cuántos hilos de sensor están corriendo en este momento
   - sensores_total   : total de sensores al arranque (constante)
   - uptime_s         : segundos transcurridos desde el inicio del servidor
   - timestamp        : marca de tiempo ISO-8601 con zona horaria local
+
+Compatibilidad con el broker:
+  - Acepta un objeto BrokerMultihilo (expone .esta_vivo())
+  - Acepta un threading.Thread clásico (expone .is_alive())
+  - Acepta None (broker_ok = False)
 
 Esto permite a PC2 distinguir entre tres estados:
   1. PC1 completamente caído      → sin respuesta (timeout de socket)
@@ -47,7 +52,7 @@ class HeartbeatServidor(threading.Thread):
         self,
         config: dict,
         hilos_sensores: list,
-        hilo_broker: threading.Thread | None,
+        hilo_broker,  # BrokerMultihilo | threading.Thread | None
         stop_event: threading.Event,
     ) -> None:
         super().__init__(name="HB-Servidor-PC1", daemon=True)
@@ -64,7 +69,15 @@ class HeartbeatServidor(threading.Thread):
         return datetime.now(timezone.utc).astimezone().isoformat(timespec="microseconds")
 
     def _construir_pong(self) -> dict:
-        broker_ok        = self.hilo_broker.is_alive() if self.hilo_broker else False
+        # Compatibilidad con BrokerMultihilo (.esta_vivo()) y
+        # threading.Thread (.is_alive()), con fallback a False si es None.
+        broker = self.hilo_broker
+        if broker is None:
+            broker_ok = False
+        elif hasattr(broker, "esta_vivo"):
+            broker_ok = broker.esta_vivo()          # BrokerMultihilo
+        else:
+            broker_ok = broker.is_alive()           # threading.Thread clasico
         sensores_activos = sum(1 for h in self.hilos_sensores if h.is_alive())
         return {
             "tipo":             "pong",

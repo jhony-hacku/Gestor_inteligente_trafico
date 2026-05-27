@@ -64,7 +64,7 @@ Cada eje tiene sus propios 3 sensores, dando **6 sensores por intersección** y 
 **Estructura:**
 ```
 pc1/
-├── gestor.py                  # Punto de entrada + Broker ZMQ + Heartbeat
+├── gestor.py                  # Punto de entrada + BrokerMultihilo + Heartbeat
 ├── heartbeat_servidor.py      # Servidor de sondeo para PC2 (puerto 5565)
 ├── requirements.txt
 ├── config/
@@ -75,6 +75,32 @@ pc1/
     ├── espira.py
     └── gps.py
 ```
+
+**Broker Multihilo (`BrokerMultihilo`):**
+
+El broker ha sido migrado de `zmq.proxy()` a una arquitectura de dos hilos dedicados basada en `zmq.proxy_steerable`:
+
+| Hilo | Nombre OS | Rol |
+|------|-----------|-----|
+| Hilo Proxy | `Broker-Proxy` | Ejecuta `proxy_steerable(xsub, xpub, ctrl)` — libera el GIL en C, throughput nativo |
+| Hilo Coordinador | `Broker-Coord` | Espera `stop_event` y envia `TERMINATE` por canal `PAIR inproc` al Proxy |
+
+```
+Sensores (PUB) ──► XSUB :5559 ──► [Hilo Proxy]──► XPUB :5560 ──► PC2 (SUB)
+                                        │
+                                  [PAIR inproc]
+                                        │
+                               [Hilo Coordinador]
+                             (stop_event → TERMINATE)
+```
+
+**Parámetros de rendimiento del broker:**
+
+| Parámetro | Valor | Descripción |
+|-----------|-------|-------------|
+| `HWM` | 100 000 msg | High-Water Mark por socket — amortigua ráfagas masivas sin pérdida |
+| `LINGER` | 0 ms | Cierre inmediato sin drenado pendiente al apagar |
+| Canal control | `PAIR inproc` | Parada determinista sin `ctx.term()` abrupto |
 
 ---
 
