@@ -91,7 +91,6 @@ class Persistencia(threading.Thread):
                 timestamp_cambio TEXT
             )
         """)
-        """)
         
         # Migración de esquema: Si la base de datos ya existía con pendiente_sync,
         # agregamos tolerablemente la nueva columna 'sincronizado'.
