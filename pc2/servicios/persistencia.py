@@ -80,7 +80,7 @@ class Persistencia(threading.Thread):
                 estado_trafico   TEXT,
                 motivo           TEXT,
                 datos_json       TEXT,
-                pendiente_sync   INTEGER DEFAULT 0,
+                sincronizado     INTEGER DEFAULT 1,
                 timestamp_ingreso TEXT
             )
         """)
@@ -91,6 +91,15 @@ class Persistencia(threading.Thread):
                 timestamp_cambio TEXT
             )
         """)
+        """)
+        
+        # Migración de esquema: Si la base de datos ya existía con pendiente_sync,
+        # agregamos tolerablemente la nueva columna 'sincronizado'.
+        try:
+            conn.execute("ALTER TABLE eventos ADD COLUMN sincronizado INTEGER DEFAULT 1;")
+        except sqlite3.OperationalError:
+            pass  # Si lanza error es porque la columna ya existe
+
         conn.commit()
         return conn
 
@@ -113,13 +122,13 @@ class Persistencia(threading.Thread):
     def _ts_now() -> str:
         return datetime.now(timezone.utc).astimezone().isoformat(timespec="microseconds")
 
-    def _guardar_local(self, evento: dict, pendiente: bool = False) -> None:
+    def _guardar_local(self, evento: dict, sincronizado: int = 1) -> None:
         ts_ingreso = self._ts_now()
         datos_json = json.dumps(evento, ensure_ascii=False)
         self._conn_db.execute("""
             INSERT INTO eventos
               (sensor_id, tipo, posicion, timestamp, estado_trafico,
-               motivo, datos_json, pendiente_sync, timestamp_ingreso)
+               motivo, datos_json, sincronizado, timestamp_ingreso)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             evento.get("sensor_id"),
@@ -129,7 +138,7 @@ class Persistencia(threading.Thread):
             evento.get("estado_trafico"),
             evento.get("motivo"),
             datos_json,
-            1 if pendiente else 0,
+            sincronizado,
             ts_ingreso,
         ))
         # Upsert del ultimo estado por interseccion
@@ -155,6 +164,61 @@ class Persistencia(threading.Thread):
         except (zmq.Again, zmq.ZMQError):
             return False
 
+    def _sincronizar_pendientes(self) -> None:
+        """
+        Hilo secundario de vaciado automático (Batch Flush).
+        Recupera eventos pendientes y los envía a PC3 cronológicamente.
+        """
+        print("\n[PERSISTENCIA] Iniciando sincronización en ráfaga (Batch Flush)...")
+        # Crear conexión independiente para el hilo
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        
+        # Crear socket ZMQ local a este hilo para evitar conflictos concurrentes
+        ctx = zmq.Context()
+        sock = ctx.socket(zmq.PUSH)
+        sock.setsockopt(zmq.SNDTIMEO, 2000)
+        sock.setsockopt(zmq.LINGER, 0)
+        host = self.config["pc3"]["host"]
+        port = self.config["pc3"]["push_port"]
+        sock.connect(f"tcp://{host}:{port}")
+        
+        try:
+            cursor.execute("SELECT id, datos_json FROM eventos WHERE sincronizado = 0 ORDER BY timestamp ASC")
+            pendientes = cursor.fetchall()
+            
+            if not pendientes:
+                return
+
+            exitosos = 0
+            for row in pendientes:
+                if self.stop_event.is_set():
+                    break
+                row_id = row[0]
+                datos_json = row[1]
+                
+                try:
+                    sock.send(datos_json.encode("utf-8"), zmq.NOBLOCK)
+                    # Marcar como sincronizado individualmente
+                    conn.execute("UPDATE eventos SET sincronizado = 1 WHERE id = ?", (row_id,))
+                    conn.commit()
+                    exitosos += 1
+                except (zmq.Again, zmq.ZMQError):
+                    print(f"\n[PERSISTENCIA] ⚠ Sincronización interrumpida. PC3 se desconectó de nuevo.")
+                    self._pc3_ok = False
+                    break
+            
+            if exitosos > 0:
+                print(f"[PERSISTENCIA] ✔ Batch Flush completado. {exitosos} eventos sincronizados correctamente.\n")
+                
+        except Exception as e:
+            if not self.stop_event.is_set():
+                print(f"[PERSISTENCIA] Error durante sincronización asíncrona: {e}")
+        finally:
+            conn.close()
+            sock.close()
+            ctx.term()
+
     # ------------------------------------------------------------------
     # Ciclo principal
     # ------------------------------------------------------------------
@@ -172,27 +236,29 @@ class Persistencia(threading.Thread):
             try:
                 evento = self.cola.get(timeout=1.0)
 
-                # 1. Guardar siempre en replica local
-                self._guardar_local(evento, pendiente=False)
-
-                # 2. Si el heartbeat ya sabe que PC3 está caído → omitir PUSH
+                # 1. Si el heartbeat ya sabe que PC3 está caído → omitir PUSH
                 #    (evita 500 ms de timeout ZMQ por cada evento encolado)
                 if self._estado_nodos is not None and not self._estado_nodos.pc3_disponible:
                     if self._pc3_ok:
                         print("[PERSISTENCIA] PC3 no disponible (heartbeat) — operando con réplica local")
                         self._pc3_ok = False
+                    
+                    self._guardar_local(evento, sincronizado=0)
                     continue
 
-                # 3. Intentar enviar a PC3
+                # 2. Intentar enviar a PC3
                 ok = self._enviar_pc3(evento)
                 if not ok:
                     if self._pc3_ok:
                         print("[PERSISTENCIA] PC3 no disponible — operando con replica local")
                         self._pc3_ok = False
+                    self._guardar_local(evento, sincronizado=0)
                 else:
+                    self._guardar_local(evento, sincronizado=1)
                     if not self._pc3_ok:
-                        print("[PERSISTENCIA] PC3 disponible de nuevo")
+                        print("[PERSISTENCIA] PC3 disponible de nuevo. Pasando a modo 'Sincronizando'...")
                         self._pc3_ok = True
+                        threading.Thread(target=self._sincronizar_pendientes, daemon=True).start()
 
             except queue.Empty:
                 continue
