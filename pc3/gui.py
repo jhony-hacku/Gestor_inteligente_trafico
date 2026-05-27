@@ -2,8 +2,15 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import scrolledtext
 import threading
+from pathlib import Path
 import zmq
 from datetime import datetime
+
+# Directorio de claves CurveZMQ de PC3 (relativo a gui.py)
+_KEYS_DIR = Path(__file__).parent / "keys"
+
+# Importar utilidades de criptografía (modo estricto: falla si faltan claves)
+from servicios.cripto import aplicar_curve_cliente
 
 class MonitorGUI:
     def __init__(self, root, monitor, stop_event):
@@ -192,7 +199,10 @@ class MonitorGUI:
             sock.setsockopt(zmq.RCVTIMEO, 3000)
             sock.setsockopt(zmq.SNDTIMEO, 3000)
             sock.setsockopt(zmq.LINGER, 0)
-            
+
+            # Aplicar CurveZMQ ANTES de connect() — falla si faltan claves
+            aplicar_curve_cliente(sock, _KEYS_DIR)
+
             host = self.monitor.config["pc2"]["host"]
             port = self.monitor.config["pc2"]["rep_port"]
             sock.connect(f"tcp://{host}:{port}")

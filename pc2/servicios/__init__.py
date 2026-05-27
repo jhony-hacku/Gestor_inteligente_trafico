@@ -9,6 +9,7 @@ from .persistencia import Persistencia
 from .servidor_control import ServidorControl
 from .servidor_consulta import ServidorConsulta
 from .heartbeat import HeartbeatCliente, EstadoNodos
+from .cripto import cargar_clave_servidor, iniciar_authenticator
 
 __all__ = [
     "Suscriptor",
@@ -19,5 +20,7 @@ __all__ = [
     "ServidorConsulta",
     "HeartbeatCliente",
     "EstadoNodos",
+    "cargar_clave_servidor",
+    "iniciar_authenticator",
 ]
 
