@@ -34,7 +34,7 @@ import threading
 import time
 from pathlib import Path
 
-from servicios import Almacenador, MonitorComandos, Receptor
+from servicios import Almacenador, MonitorComandos, Receptor, HeartbeatServidor
 
 # ---------------------------------------------------------------------------
 BASE_DIR    = Path(__file__).parent
@@ -63,6 +63,7 @@ def _banner(config: dict) -> None:
     print(f"  PC2 comandos      : tcp://{config['pc2']['host']}:{config['pc2']['rep_port']}")
     db_path = BASE_DIR / config["db"]["ruta"]
     print(f"  Base de datos     : {db_path}")
+    print(f"  Heartbeat REP     : tcp://*:{config['heartbeat']['rep_port']} (sondeable por PC2)")
     print()
 
 
@@ -79,6 +80,7 @@ def main() -> None:
         Receptor(config, cola_db, stop_event),
         Almacenador(config, cola_db, stop_event),
         MonitorComandos(config, stop_event),
+        HeartbeatServidor(config, stop_event),
     ]
 
     for srv in servicios:

@@ -9,6 +9,9 @@
   "servidor_consulta_pc2": {
     "port": 5564
   },
+  "heartbeat": {
+    "rep_port": 5566
+  },
   "db": {
     "ruta": "db/trafico_principal.db"
   }

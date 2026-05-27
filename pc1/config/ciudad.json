@@ -9,6 +9,9 @@
     "xsub_port": 5559,
     "xpub_port": 5560
   },
+  "heartbeat": {
+    "rep_port": 5565
+  },
   "tipos_sensor": {
     "camara": {
       "frecuencia_seg": 30,

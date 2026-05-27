@@ -39,6 +39,7 @@ if hasattr(sys.stderr, "reconfigure"):
 from sensores.camara import SensorCamara
 from sensores.espira import SensorEspira
 from sensores.gps import SensorGPS
+from heartbeat_servidor import HeartbeatServidor
 
 # ─── Rutas ────────────────────────────────────────────────────────────────────
 BASE_DIR    = Path(__file__).parent
@@ -221,7 +222,7 @@ def main() -> None:
 
     # ── Broker ZMQ ────────────────────────────────────────────────────────────
     print("[BROKER] Iniciando...")
-    iniciar_broker(config, ctx)
+    hilo_broker = iniciar_broker(config, ctx)
     # Dar tiempo al broker para que haga bind antes de que los sensores conecten
     time.sleep(0.5)
 
@@ -245,6 +246,10 @@ def main() -> None:
         daemon=True,
     )
     hilo_monitor.start()
+
+    # ── Servidor Heartbeat (sondeable por PC2) ────────────────────────────────
+    hb_servidor = HeartbeatServidor(config, hilos, hilo_broker, stop_event)
+    hb_servidor.start()
 
     print()
     print("-" * 60)

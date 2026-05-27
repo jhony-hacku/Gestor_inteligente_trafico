@@ -13,6 +13,14 @@
   "servidor_consulta": {
     "rep_port": 5564
   },
+  "heartbeat": {
+    "pc1_host":      "10.43.99.192",
+    "pc1_hb_port":   5565,
+    "pc3_host":      "10.43.99.78",
+    "pc3_hb_port":   5566,
+    "intervalo_seg": 10,
+    "timeout_ms":    10000
+  },
   "umbrales": {
     "cola_max": 5,
     "velocidad_min_kmh": 35.0,

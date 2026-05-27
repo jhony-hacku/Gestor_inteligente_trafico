@@ -22,8 +22,12 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import zmq
+
+if TYPE_CHECKING:
+    from .heartbeat import EstadoNodos
 
 
 DB_PATH = Path(__file__).parent.parent / "replica" / "trafico.db"
@@ -44,15 +48,17 @@ class Persistencia(threading.Thread):
     """
 
     def __init__(self, config: dict, cola_persistencia: queue.Queue,
-                 stop_event: threading.Event) -> None:
+                 stop_event: threading.Event,
+                 estado_nodos: "EstadoNodos | None" = None) -> None:
         super().__init__(name="Persistencia", daemon=True)
-        self.config      = config
-        self.cola        = cola_persistencia
-        self.stop_event  = stop_event
-        self._ctx        = None
-        self._sock_pc3   = None
+        self.config        = config
+        self.cola          = cola_persistencia
+        self.stop_event    = stop_event
+        self._estado_nodos = estado_nodos   # None si se usa sin heartbeat
+        self._ctx          = None
+        self._sock_pc3     = None
         self._conn_db: sqlite3.Connection | None = None
-        self._pc3_ok     = True   # flag de disponibilidad de PC3
+        self._pc3_ok       = True   # flag de disponibilidad de PC3
 
     # ------------------------------------------------------------------
     # Inicializacion
@@ -166,14 +172,22 @@ class Persistencia(threading.Thread):
             try:
                 evento = self.cola.get(timeout=1.0)
 
-                # 1. Guardar siempre en replica local (sin marcar pendiente aun)
+                # 1. Guardar siempre en replica local
                 self._guardar_local(evento, pendiente=False)
 
-                # 2. Intentar enviar a PC3
+                # 2. Si el heartbeat ya sabe que PC3 está caído → omitir PUSH
+                #    (evita 500 ms de timeout ZMQ por cada evento encolado)
+                if self._estado_nodos is not None and not self._estado_nodos.pc3_disponible:
+                    if self._pc3_ok:
+                        print("[PERSISTENCIA] PC3 no disponible (heartbeat) — operando con réplica local")
+                        self._pc3_ok = False
+                    continue
+
+                # 3. Intentar enviar a PC3
                 ok = self._enviar_pc3(evento)
                 if not ok:
                     if self._pc3_ok:
-                        print("[PERSISTENCIA] PC3 no disponible - operando con replica local")
+                        print("[PERSISTENCIA] PC3 no disponible — operando con replica local")
                         self._pc3_ok = False
                 else:
                     if not self._pc3_ok:

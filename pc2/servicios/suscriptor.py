@@ -12,8 +12,13 @@ periódicamente sin bloquearse indefinidamente.
 import json
 import queue
 import threading
+import time
+from typing import TYPE_CHECKING
 
 import zmq
+
+if TYPE_CHECKING:
+    from .heartbeat import EstadoNodos
 
 
 class Suscriptor(threading.Thread):
@@ -31,11 +36,14 @@ class Suscriptor(threading.Thread):
     """
 
     def __init__(self, config: dict, cola_eventos: queue.Queue,
-                 stop_event: threading.Event) -> None:
+                 stop_event: threading.Event,
+                 estado_nodos: "EstadoNodos | None" = None) -> None:
         super().__init__(name="Suscriptor-ZMQ", daemon=True)
-        self.config      = config
-        self.cola        = cola_eventos
-        self.stop_event  = stop_event
+        self.config        = config
+        self.cola          = cola_eventos
+        self.stop_event    = stop_event
+        self._estado_nodos = estado_nodos
+        self._ultimo_aviso_pc1 = 0.0   # epoch del último aviso de PC1 caído
 
     def run(self) -> None:
         ctx  = zmq.Context()
@@ -62,7 +70,19 @@ class Suscriptor(threading.Thread):
                 evento["_fuente"] = "sensor"
                 self.cola.put_nowait(evento)
             except zmq.Again:
-                # Timeout normal, verificar stop_event y continuar
+                # Timeout normal — verificar stop_event y continuar
+                # Si el heartbeat reporta PC1 caído, advertir periódicamente
+                if (
+                    self._estado_nodos is not None
+                    and not self._estado_nodos.pc1_disponible
+                ):
+                    ahora = time.time()
+                    if ahora - self._ultimo_aviso_pc1 >= 30:
+                        print(
+                            "[SUSCRIPTOR] \u26a0 PC1 no disponible (heartbeat) "
+                            "— sin datos de sensores"
+                        )
+                        self._ultimo_aviso_pc1 = ahora
                 continue
             except json.JSONDecodeError as e:
                 print(f"[SUSCRIPTOR] JSON invalido ignorado: {e}")
