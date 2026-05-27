@@ -4,16 +4,16 @@
 #  Gestor Inteligente de Tráfico Urbano
 # =============================================================================
 #
-#  PC3 es el nodo de persistencia y monitoreo. Recibe datos de PC2
-#  y expone su servidor de heartbeat para que PC2 verifique su salud.
+#  PC3 es el nodo de alta disponibilidad, persistencia y monitoreo. 
+#  Recibe datos consolidados de PC2 y expone su servidor de heartbeat.
 #
 #  Puertos abiertos en PC3 y quién puede conectarse:
 #  ┌──────┬───────────────────────────────────────────────────────────┐
-#  │ Puerto │ Descripción                           │ Fuente permitida │
-#  ├──────┬───────────────────────────────────────────────────────────┤
-#  │ 22    │ SSH (administración)                   │ Cualquier IP     │
-#  │ 5561  │ Receptor PULL (datos de PC2)           │ 10.43.100.91     │
-#  │ 5566  │ Heartbeat REP (PC2 verifica PC3)       │ 10.43.100.91     │
+#  │ Puerto │ Descripción                                           │ Fuente permitida │
+#  ├──────┼───────────────────────────────────────────────────────────┤
+#  │ 22    │ SSH (administración)                                  │ Cualquier IP     │
+#  │ 5561  │ Receptor PULL (datos de PC2)                           │ 10.43.100.91     │
+#  │ 5566  │ Heartbeat REP (PC2 verifica PC3)                       │ 10.43.100.91     │
 #  └──────┴───────────────────────────────────────────────────────────┘
 #
 #  NOTA: PC3 inicia conexiones SALIENTES hacia:
@@ -34,54 +34,62 @@ PC3_IP="10.43.99.78"
 
 echo ""
 echo "============================================================"
-echo "  Configurando UFW — PC3 ($PC3_IP)"
+echo " Configurando UFW — PC3 ($PC3_IP)"
 echo "============================================================"
 echo ""
 
+# Verificar que se ejecuta como root
 if [[ $EUID -ne 0 ]]; then
     echo "[ERROR] Este script requiere privilegios de root."
     echo "        Usa: sudo bash firewall_pc3.sh"
     exit 1
 fi
 
+# Asegurar que UFW está instalado
 if ! command -v ufw &> /dev/null; then
     echo "[INFO] Instalando UFW..."
-    apt-get install -y ufw
+    apt-get update && apt-get install -y ufw
 fi
 
-# ── PASO 1: No interferir con la política por defecto ────────────────────────
-echo "[UFW] Manteniendo configuración global y servicios de terceros intactos..."
-# Eliminamos el reset y las politicas por defecto para no romper RDP/Zabbix
+# ── PASO 1: Asegurar acceso SSH ─────────────────────────────────────────────
+# Prevenir bloqueos accidentales en la administración remota de PC3
+echo "[UFW] Asegurando puerto SSH (22)..."
+ufw allow 22/tcp comment "SSH - administracion"
 
-# ── PASO 2: Reglas específicas del sistema de tráfico (PC3) ─────────────────
-# Las reglas de UFW se leen en orden. Primero permitimos la IP correcta,
-# luego denegamos el resto del tráfico a ese puerto específico.
+# ── PASO 2: Limpieza preventiva de reglas viejas de ZeroMQ ──────────────────
+# Eliminamos cualquier regla previa en estos puertos para evitar redundancias o bloqueos fantasma
+echo "[UFW] Limpiando reglas previas de los puertos de PC3..."
+ufw delete allow 5561/tcp || true
+ufw delete deny 5561/tcp || true
+ufw delete allow 5566/tcp || true
+ufw delete deny 5566/tcp || true
 
-# Puerto 5561 — Receptor PULL: PC2 empuja eventos de tráfico procesados
-echo "[UFW] Protegiendo Puerto 5561 (PULL receptor datos) → solo PC2 ($PC2_IP)..."
-ufw allow from "$PC2_IP" to any port 5561 proto tcp comment "PULL datos - permite PC2"
-ufw deny to any port 5561 proto tcp comment "PULL datos - bloquea resto"
+# ── PASO 3: Inyección de reglas en orden estricto (Top-Down) ────────────────
+# Usamos 'insert 1'. Inyectamos en orden inverso para que los ALLOW
+# queden empujados encima de sus respectivos DENY.
 
-# Puerto 5566 — Heartbeat REP: PC2 verifica el estado de PC3
-echo "[UFW] Protegiendo Puerto 5566 (Heartbeat REP) → solo PC2 ($PC2_IP)..."
-ufw allow from "$PC2_IP" to any port 5566 proto tcp comment "Heartbeat REP - permite PC2"
-ufw deny to any port 5566 proto tcp comment "Heartbeat REP - bloquea resto"
+# --- Puerto 5566: Heartbeat REP (PC2) ---
+echo "[UFW] Configurando Puerto 5566 (Heartbeat REP) para PC2..."
+ufw insert 1 deny to any port 5566 proto tcp comment "Heartbeat REP - bloquea resto"
+ufw insert 1 allow from "$PC2_IP" to any port 5566 proto tcp comment "Heartbeat REP - permite PC2"
 
-# ── PASO 3: Habilitar UFW ───────────────────────────────────────────────────
+# --- Puerto 5561: Receptor PULL datos (PC2) ---
+echo "[UFW] Configurando Puerto 5561 (PULL receptor datos) para PC2..."
+ufw insert 1 deny to any port 5561 proto tcp comment "PULL datos - bloquea resto"
+ufw insert 1 allow from "$PC2_IP" to any port 5561 proto tcp comment "PULL datos - permite PC2"
+
+
+# ── PASO 4: Habilitar UFW ───────────────────────────────────────────────────
 echo ""
-echo "[UFW] Habilitando firewall..."
+echo "[UFW] Aplicando cambios y habilitando firewall..."
 ufw --force enable
 
 # ── RESUMEN ─────────────────────────────────────────────────────────────────
 echo ""
 echo "============================================================"
-echo "  UFW activo en PC3 — Reglas aplicadas:"
+echo "  UFW activo en PC3 — Reglas aplicadas ordenadas:"
 echo "============================================================"
-ufw status verbose
+ufw status numbered
 echo ""
-echo "  Tráfico bloqueado por defecto:"
-echo "    • Cualquier IP no autorizada intentando acceder a los puertos 5561 y 5566."
-echo "  [NOTA] Los demás puertos (RDP, Zabbix, SSH) NO han sido modificados."
-echo ""
-echo "  [OK] Configuración de firewall completada en PC3."
+echo "  [OK] Configuración del Gestor Inteligente de Tráfico completada en PC3."
 echo ""
