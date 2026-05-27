@@ -103,18 +103,27 @@ def main() -> None:
     signal.signal(signal.SIGINT,  _apagar)
     signal.signal(signal.SIGTERM, _apagar)
 
-    # Iniciar interfaz gráfica de usuario en el hilo principal
+    # Iniciar interfaz gráfica de usuario o modo consola
     monitor = next(s for s in servicios if isinstance(s, MonitorComandos))
     
-    import tkinter as tk
-    from gui import MonitorGUI
-
     try:
+        import tkinter as tk
+        from gui import MonitorGUI
         root = tk.Tk()
         app = MonitorGUI(root, monitor, stop_event)
         root.mainloop()
-    except KeyboardInterrupt:
-        pass
+    except Exception as e:
+        print(f"[PC3] ⚠ Iniciando en MODO CONSOLA (GUI no disponible: {e})")
+        try:
+            while not stop_event.is_set():
+                try:
+                    linea = input("> ")
+                    if not monitor._procesar_comando_consola(linea):
+                        break
+                except EOFError:
+                    break
+        except KeyboardInterrupt:
+            pass
 
     _apagar(None, None)
 

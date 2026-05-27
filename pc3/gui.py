@@ -1,7 +1,9 @@
 import tkinter as tk
 from tkinter import ttk
+from tkinter import scrolledtext
 import threading
 import zmq
+from datetime import datetime
 
 class MonitorGUI:
     def __init__(self, root, monitor, stop_event):
@@ -9,7 +11,7 @@ class MonitorGUI:
         self.monitor = monitor
         self.stop_event = stop_event
         self.root.title("PC3 - Monitor de Tráfico (GUI)")
-        self.root.geometry("900x600")
+        self.root.geometry("900x750")
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
@@ -24,13 +26,60 @@ class MonitorGUI:
         self.main_frame = ttk.Frame(self.root, padding=10)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
 
+        # === REDISEÑO DEL LAYOUT ===
+        # Panel superior para grid y controles
+        self.top_frame = ttk.Frame(self.main_frame)
+        self.top_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
         # Panel izquierdo para la grilla (5x5)
-        self.grid_frame = ttk.Frame(self.main_frame)
+        self.grid_frame = ttk.Frame(self.top_frame)
         self.grid_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         # Panel derecho para los controles
-        self.control_frame = ttk.LabelFrame(self.main_frame, text="Consola del Operador", padding=15)
+        self.control_frame = ttk.LabelFrame(self.top_frame, text="Consola del Operador", padding=15)
         self.control_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=10)
+
+        # Panel inferior expandible
+        self.log_frame = ttk.Frame(self.main_frame)
+        self.log_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=10)
+
+        # Componente de pestañas nativo
+        self.notebook = ttk.Notebook(self.log_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+        # --- Pestaña 1: Decisiones y Semáforos ---
+        self.tab_decisiones = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_decisiones, text=" Decisiones y Semáforos ")
+        
+        self.txt_decisiones = scrolledtext.ScrolledText(
+            self.tab_decisiones, height=10, bg="#1e1e1e", fg="#00ff00", font=("Consolas", 10)
+        )
+        self.txt_decisiones.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.txt_decisiones.configure(state='disabled')
+
+        # --- Pestaña 2: Heartbeat y Failover ---
+        self.tab_resiliencia = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_resiliencia, text=" Heartbeat y Failover ")
+        
+        self.status_header_frame = ttk.Frame(self.tab_resiliencia)
+        self.status_header_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.led_canvas = tk.Canvas(self.status_header_frame, width=20, height=20, bg="#f0f0f0", highlightthickness=0)
+        self.led_canvas.pack(side=tk.LEFT, padx=(0, 5))
+        self.led_circle = self.led_canvas.create_oval(2, 2, 18, 18, fill="gray")
+        
+        self.lbl_network_status = ttk.Label(self.status_header_frame, text="Iniciando estado de red...", font=('Arial', 10, 'bold'))
+        self.lbl_network_status.pack(side=tk.LEFT)
+
+        self.txt_alertas = scrolledtext.ScrolledText(
+            self.tab_resiliencia, height=8, bg="#1e1e1e", fg="#ffffff", font=("Consolas", 10)
+        )
+        self.txt_alertas.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.txt_alertas.configure(state='disabled')
+
+        # Variables de estado para no duplicar logs
+        self.last_states = {}
+        self.last_db_ok = None
 
         self.cells = {}
         self.create_grid()
@@ -38,6 +87,25 @@ class MonitorGUI:
 
         # Iniciar el bucle de actualización
         self.update_gui()
+
+    def _log_decision(self, texto):
+        self.txt_decisiones.configure(state='normal')
+        self.txt_decisiones.insert(tk.END, texto + "\n")
+        
+        # Búfer automático de 50 líneas máximo
+        lineas = int(self.txt_decisiones.index('end-1c').split('.')[0])
+        if lineas > 50:
+            self.txt_decisiones.delete('1.0', f'{lineas - 50 + 1}.0')
+            
+        self.txt_decisiones.see(tk.END)
+        self.txt_decisiones.configure(state='disabled')
+
+    def _log_alert(self, texto):
+        self.txt_alertas.configure(state='normal')
+        ts = datetime.now().strftime('%H:%M:%S')
+        self.txt_alertas.insert(tk.END, f"[{ts}] {texto}\n")
+        self.txt_alertas.see(tk.END)
+        self.txt_alertas.configure(state='disabled')
 
     def create_grid(self):
         rows = ['A', 'B', 'C', 'D', 'E']
@@ -110,6 +178,12 @@ class MonitorGUI:
             # Enviar el comando de forma asincrónica para no bloquear la GUI
             threading.Thread(target=self._send_cmd_thread, args=(cmd, posicion), daemon=True).start()
 
+    def _trigger_network_error(self):
+        self.led_canvas.itemconfig(self.led_circle, fill="red")
+        self.lbl_network_status.config(text="Failover Activo / Error ZMQ", foreground="red")
+        self._log_alert("🚨 FALLO DE RED DETECTADO: PC3 fuera de línea. Failover activo en SQLite local")
+        self.last_db_ok = False
+
     def _send_cmd_thread(self, cmd, posicion):
         try:
             # Crear un socket ZMQ independiente para este hilo y evitar errores de concurrencia
@@ -133,6 +207,9 @@ class MonitorGUI:
             sock.close()
         except Exception as exc:
             resp = f"Error ZMQ: {exc}"
+            # Capturar timeout zmq.Again para disparar alerta de red
+            if "Again" in str(type(exc)) or "Timeout" in str(exc) or "Again" in str(exc):
+                self.root.after(0, self._trigger_network_error)
             
         # Actualizar la interfaz en el hilo principal
         self.root.after(0, lambda: self.status_label.config(text=f"Respuesta: {resp}", foreground="black"))
@@ -154,6 +231,17 @@ class MonitorGUI:
         for r in rows:
             posicion, estado, motivo, sensor, ts = r
             
+            # --- TAB 1: LOG DE DECISIONES Y SEMAFOROS ---
+            state_key = posicion
+            current_state = f"{estado}|{motivo}"
+            
+            # Solo loggeamos cuando el estado o motivo de una intersección cambia
+            if state_key not in self.last_states or self.last_states[state_key] != current_state:
+                log_msg = f"[{posicion}] Estado: {estado} | Motivo: {motivo} | Sensor: {sensor} | TS: {ts}"
+                self._log_decision(log_msg)
+                self.last_states[state_key] = current_state
+            # --------------------------------------------
+
             if posicion.endswith("_NS") or posicion.endswith("_EO"):
                 base = posicion[:-3]
                 direccion = posicion[-2:] # "NS" o "EO"
@@ -170,10 +258,26 @@ class MonitorGUI:
                 elif "ROJO" in estado_upper:
                     color = "red"
                 else:
-                    # Si el estado es normal o no está explícitamente definido como rojo/verde
                     color = "yellow"
                     
                 self.cells[base][direccion].config(bg=color)
+
+        # --- TAB 2: HEARTBEAT, RESILIENCIA Y FAILOVER ---
+        db_ok = getattr(self.monitor, '_db_ok', True)
+        
+        if self.last_db_ok is None or self.last_db_ok != db_ok:
+            if db_ok:
+                self.led_canvas.itemconfig(self.led_circle, fill="#00ff00") # Verde
+                self.lbl_network_status.config(text="Conectado / Heartbeat OK", foreground="green")
+                if self.last_db_ok is False:
+                    self._log_alert("Conexión restablecida. Sincronización automática de datos en lote completada.")
+            else:
+                self.led_canvas.itemconfig(self.led_circle, fill="#ff0000") # Rojo brillante
+                self.lbl_network_status.config(text="Failover Activo", foreground="red")
+                self._log_alert("🚨 FALLO DE RED DETECTADO: PC3 fuera de línea. Failover activo en SQLite local")
+            
+            self.last_db_ok = db_ok
+        # ------------------------------------------------
 
         # Reprogramar la actualización en 500 ms (tasa de refresco constante)
         self.root.after(500, self.update_gui)
