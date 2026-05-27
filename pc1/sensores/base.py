@@ -31,9 +31,14 @@ class SensorBase(threading.Thread, ABC):
         Puerto XSUB del broker ZMQ al que se conecta el socket PUB del sensor.
     stop_event : threading.Event
         Evento compartido para senalar el apagado coordinado de todos los hilos.
+    ctx : zmq.Context
+        Contexto ZMQ compartido del proceso.  Un unico contexto por proceso es
+        la practica recomendada por ZMQ para evitar el agotamiento de file
+        descriptors cuando hay muchos hilos de sensor (150 en este caso).
     """
 
-    def __init__(self, config: dict, broker_port: int, stop_event: threading.Event):
+    def __init__(self, config: dict, broker_port: int,
+                 stop_event: threading.Event, ctx: zmq.Context):
         super().__init__(name=config["sensor_id"], daemon=True)
         self.config = config
         self.sensor_id: str = config["sensor_id"]
@@ -42,8 +47,7 @@ class SensorBase(threading.Thread, ABC):
         self.frecuencia: int = config["frecuencia_seg"]
         self.broker_port: int = broker_port
         self.stop_event: threading.Event = stop_event
-
-        self._context: zmq.Context | None = None
+        self._ctx: zmq.Context = ctx          # contexto compartido
         self._socket: zmq.Socket | None = None
 
     # ------------------------------------------------------------------
@@ -51,17 +55,14 @@ class SensorBase(threading.Thread, ABC):
     # ------------------------------------------------------------------
 
     def _conectar(self) -> None:
-        """Crea el socket PUB y se conecta al XSUB del Broker."""
-        self._context = zmq.Context()
-        self._socket = self._context.socket(zmq.PUB)
+        """Crea el socket PUB usando el contexto compartido y se conecta al Broker."""
+        self._socket = self._ctx.socket(zmq.PUB)
         self._socket.connect(f"tcp://localhost:{self.broker_port}")
 
     def _desconectar(self) -> None:
-        """Cierra el socket y termina el contexto ZMQ del hilo."""
+        """Cierra el socket PUB. El contexto es gestionado por gestor.py."""
         if self._socket:
             self._socket.close()
-        if self._context:
-            self._context.term()
 
     # ------------------------------------------------------------------
     # Publicacion de mensajes

@@ -234,7 +234,7 @@ def main() -> None:
     hilos: list[threading.Thread] = []
     for sensor_cfg in lista_sensores:
         clase = TIPO_A_CLASE[sensor_cfg["tipo"]]
-        hilo  = clase(sensor_cfg, config["broker"]["xsub_port"], stop_event)
+        hilo  = clase(sensor_cfg, config["broker"]["xsub_port"], stop_event, ctx)
         hilo.start()
         hilos.append(hilo)
 
