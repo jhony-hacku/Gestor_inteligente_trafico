@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 import threading
+import zmq
 
 class MonitorGUI:
     def __init__(self, root, monitor, stop_event):
@@ -110,7 +111,29 @@ class MonitorGUI:
             threading.Thread(target=self._send_cmd_thread, args=(cmd, posicion), daemon=True).start()
 
     def _send_cmd_thread(self, cmd, posicion):
-        resp = self.monitor._enviar_comando_pc2(cmd, posicion)
+        try:
+            # Crear un socket ZMQ independiente para este hilo y evitar errores de concurrencia
+            ctx = zmq.Context.instance()
+            sock = ctx.socket(zmq.REQ)
+            sock.setsockopt(zmq.RCVTIMEO, 3000)
+            sock.setsockopt(zmq.SNDTIMEO, 3000)
+            sock.setsockopt(zmq.LINGER, 0)
+            
+            host = self.monitor.config["pc2"]["host"]
+            port = self.monitor.config["pc2"]["rep_port"]
+            sock.connect(f"tcp://{host}:{port}")
+            
+            sock.send_json({
+                "comando": cmd.upper(),
+                "posicion": posicion.upper(),
+                "duracion_seg": 60,
+            })
+            resp_json = sock.recv_json()
+            resp = resp_json.get("mensaje", str(resp_json))
+            sock.close()
+        except Exception as exc:
+            resp = f"Error ZMQ: {exc}"
+            
         # Actualizar la interfaz en el hilo principal
         self.root.after(0, lambda: self.status_label.config(text=f"Respuesta: {resp}", foreground="black"))
 
@@ -119,8 +142,8 @@ class MonitorGUI:
             self.root.quit()
             return
             
-        # Consultar la base de datos local o estado en memoria a traves del monitor
-        rows = self.monitor._leer_estados()
+        # Consultar la base de datos local directamente de forma thread-safe
+        rows = self.monitor._leer_estados_local()
         
         # Reiniciar todos los colores a neutro (gris) por defecto (SIN DATOS)
         for cruce in self.cells.values():

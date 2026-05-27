@@ -30,6 +30,7 @@ Cada cambio de estado se notifica a:
 
 import queue
 import threading
+from collections import deque
 from datetime import datetime, timezone
 
 
@@ -82,45 +83,79 @@ class MotorReglas(threading.Thread):
         return datetime.now(timezone.utc).astimezone().isoformat(timespec="microseconds")
 
     # ------------------------------------------------------------------
-    # Evaluacion por tipo de sensor
+    # Gestión de Memoria y Evaluador Avanzado
     # ------------------------------------------------------------------
 
-    def _evaluar_camara(self, evento: dict) -> tuple[str, str]:
-        cola = evento.get("longitud_cola", 0)
-        vel  = evento.get("velocidad_promedio", 999.0)
-        u    = self.umbrales
+    def _get_o_crear_memoria(self, posicion: str) -> dict:
+        if posicion not in self._estado_intersecciones:
+            self._estado_intersecciones[posicion] = {
+                "estado": NORMAL,
+                "timestamp": self._ts(),
+                "motivo": "Inicialización",
+                "sensores": {
+                    "camara": {},
+                    "espira": {},
+                    "gps": {}
+                },
+                "historial_camara_cola": deque(maxlen=4)
+            }
+        return self._estado_intersecciones[posicion]
 
-        if vel < u["velocidad_ambulancia_kmh"]:
-            return OLA_VERDE, f"Posible ambulancia detectada por camara (Vp={vel} km/h)"
-        if cola > u["cola_max"]:
-            return CONGESTION, f"Cola larga: Q={cola} > {u['cola_max']} vehiculos"
-        if vel < u["velocidad_min_kmh"]:
-            return CONGESTION, f"Velocidad baja: Vp={vel} < {u['velocidad_min_kmh']} km/h"
-        return NORMAL, f"Flujo normal: Q={cola}, Vp={vel} km/h"
+    def _evaluar_eje(self, posicion: str, evento_disparador: dict, ts: str) -> None:
+        memoria = self._estado_intersecciones[posicion]
+        sens = memoria["sensores"]
+        u = self.umbrales
+        cola_max = float(u.get("cola_max", 20)) # Capacidad máxima asumida por cuadra
+        
+        cam = sens["camara"]
+        gps = sens["gps"]
+        esp = sens["espira"]
+        
+        # Prioridad Cero: Ambulancias
+        if cam.get("velocidad_promedio", 999) < u["velocidad_ambulancia_kmh"]:
+            self._actualizar_estado(posicion, OLA_VERDE, "Ambulancia detectada (Cámara)", evento_disparador, ts)
+            return
+        if gps.get("velocidad_promedio", 999) < u["velocidad_ambulancia_kmh"]:
+            self._actualizar_estado(posicion, OLA_VERDE, "Ambulancia detectada (GPS)", evento_disparador, ts)
+            return
 
-    def _evaluar_espira(self, evento: dict) -> tuple[str, str]:
-        conteo   = evento.get("conteo_vehicular", 0)
-        intervalo = evento.get("intervalo_seg", 30)
-        tasa_min = (conteo / intervalo) * 60  # vehiculos por minuto
-        umbral   = self.umbrales["conteo_congestion_por_minuto"]
+        # Variables para las reglas analíticas
+        ocupacion_camara = cam.get("longitud_cola", 0) / cola_max if cola_max > 0 else 0
+        gps_vel = gps.get("velocidad_promedio", 999.0)
+        espira_tasa = esp.get("tasa_min", 0.0)
+        
+        # Regla 1: Correlación Alternativa por Umbrales Críticos
+        if ocupacion_camara > 0.95:
+            self._actualizar_estado(posicion, CONGESTION, f"Umbral crítico: Ocupación cámara > 95% ({(ocupacion_camara*100):.1f}%)", evento_disparador, ts)
+            return
+            
+        # Regla 2: Tendencia Temporal e Histórico Local (Cámara)
+        historial = memoria["historial_camara_cola"]
+        if len(historial) == historial.maxlen:
+            creciente = True
+            for i in range(1, len(historial)):
+                if historial[i] <= historial[i-1]:
+                    creciente = False
+                    break
+            
+            if creciente:
+                primero = historial[0]
+                ultimo = historial[-1]
+                # Incremento continuo mayor al 25% de la capacidad máxima
+                delta = (ultimo - primero) / cola_max if cola_max > 0 else 0
+                if delta > 0.25:
+                    self._actualizar_estado(posicion, CONGESTION, f"Tendencia predictiva: Incremento continuo del {(delta*100):.1f}%", evento_disparador, ts)
+                    return
 
-        if tasa_min >= umbral:
-            return CONGESTION, f"Alta densidad: {tasa_min:.0f} veh/min > {umbral}"
-        return NORMAL, f"Flujo normal: {tasa_min:.0f} veh/min"
-
-    def _evaluar_gps(self, evento: dict) -> tuple[str, str]:
-        densidad = evento.get("densidad", 0.0)
-        vel      = evento.get("velocidad_promedio", 999.0)
-        nivel    = evento.get("nivel_congestion", "BAJA")
-        u        = self.umbrales
-
-        if vel < u["velocidad_ambulancia_kmh"]:
-            return OLA_VERDE, f"Posible ambulancia detectada por GPS (Vp={vel} km/h)"
-        if densidad > u["densidad_max"]:
-            return CONGESTION, f"Densidad critica: D={densidad:.3f} > {u['densidad_max']} [{nivel}]"
-        if vel < u["velocidad_min_kmh"]:
-            return CONGESTION, f"Velocidad baja: Vp={vel} < {u['velocidad_min_kmh']} km/h [{nivel}]"
-        return NORMAL, f"D={densidad:.3f}, Vp={vel} km/h [{nivel}]"
+        # Regla 3: Regla Combinada Estándar (Cámara + GPS + Espira)
+        # Ocupación de cámara > 75%, GPS vel < 15 km/h, Espira densidad > 20 veh/min
+        if (ocupacion_camara > 0.75 and gps_vel < 15.0 and espira_tasa > 20.0):
+            motivo = f"Regla combinada: Ocup={ocupacion_camara*100:.1f}%, GPS_V={gps_vel:.1f}, Esp_Tasa={espira_tasa:.1f}"
+            self._actualizar_estado(posicion, CONGESTION, motivo, evento_disparador, ts)
+            return
+            
+        # Default
+        self._actualizar_estado(posicion, NORMAL, "Flujo normal según analítica avanzada", evento_disparador, ts)
 
     # ------------------------------------------------------------------
     # Procesamiento de eventos
@@ -136,30 +171,47 @@ class MotorReglas(threading.Thread):
         if fuente == "PC3_MANUAL":
             nuevo_estado = evento.get("comando", OLA_VERDE)
             motivo       = f"Orden directa de PC3: {evento.get('comando', OLA_VERDE)}"
+            self._get_o_crear_memoria(posicion)
             self._actualizar_estado(posicion, nuevo_estado, motivo, evento, ts)
             return
 
         tipo = evento.get("tipo")
-        if tipo == "camara":
-            nuevo_estado, motivo = self._evaluar_camara(evento)
-        elif tipo == "espira":
-            nuevo_estado, motivo = self._evaluar_espira(evento)
-        elif tipo == "gps":
-            nuevo_estado, motivo = self._evaluar_gps(evento)
-        else:
+        if tipo not in ("camara", "espira", "gps"):
             return  # tipo desconocido, ignorar
 
-        self._actualizar_estado(posicion, nuevo_estado, motivo, evento, ts)
+        memoria_eje = self._get_o_crear_memoria(posicion)
+
+        # Actualizar la memoria con el último dato del sensor correspondiente
+        if tipo == "camara":
+            memoria_eje["sensores"]["camara"] = {
+                "longitud_cola": evento.get("longitud_cola", 0),
+                "velocidad_promedio": evento.get("velocidad_promedio", 999.0)
+            }
+            memoria_eje["historial_camara_cola"].append(evento.get("longitud_cola", 0))
+        elif tipo == "espira":
+            conteo = evento.get("conteo_vehicular", 0)
+            intervalo = evento.get("intervalo_seg", 30)
+            tasa_min = (conteo / intervalo) * 60 if intervalo > 0 else 0
+            memoria_eje["sensores"]["espira"] = {
+                "tasa_min": tasa_min
+            }
+        elif tipo == "gps":
+            memoria_eje["sensores"]["gps"] = {
+                "velocidad_promedio": evento.get("velocidad_promedio", 999.0),
+                "densidad": evento.get("densidad", 0.0)
+            }
+
+        # Ejecutar evaluador avanzado con la memoria consolidada
+        self._evaluar_eje(posicion, evento, ts)
 
     def _actualizar_estado(self, posicion: str, nuevo_estado: str,
                            motivo: str, evento: dict, ts: str) -> None:
-        estado_previo = self._estado_intersecciones.get(posicion, {}).get("estado")
+        memoria = self._get_o_crear_memoria(posicion)
+        estado_previo = memoria.get("estado")
 
-        self._estado_intersecciones[posicion] = {
-            "estado":    nuevo_estado,
-            "timestamp": ts,
-            "motivo":    motivo,
-        }
+        memoria["estado"] = nuevo_estado
+        memoria["timestamp"] = ts
+        memoria["motivo"] = motivo
 
         # Notificar al controlador de semaforos SIEMPRE (para trazabilidad)
         cmd_semaforo = {
@@ -190,11 +242,10 @@ class MotorReglas(threading.Thread):
                     "tipo":      "seguridad_vial",
                 }
                 self.cola_semaforos.put_nowait(cmd_opuesto)
-                self._estado_intersecciones[pos_opuesta] = {
-                    "estado":    "ROJO_FORZADO",
-                    "timestamp": ts,
-                    "motivo":    cmd_opuesto["motivo"],
-                }
+                memoria_opuesta = self._get_o_crear_memoria(pos_opuesta)
+                memoria_opuesta["estado"] = "ROJO_FORZADO"
+                memoria_opuesta["timestamp"] = ts
+                memoria_opuesta["motivo"] = cmd_opuesto["motivo"]
 
         # Persistir evento enriquecido
         evento_procesado = {
