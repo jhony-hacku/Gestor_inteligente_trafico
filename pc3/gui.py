@@ -445,18 +445,35 @@ class MonitorGUI:
             ))
 
     def _update_charts_ui(self, posicion, x_congestion, y_cola, y_conteo, x_perf, y_volume, y_latency):
-        """Construye y renderiza las figuras de Matplotlib en la ventana secundaria."""
+        """
+        Construye y renderiza las figuras en la ventana secundaria.
+        Si matplotlib no está instalado, muestra los datos en una tabla de texto nativa de Tkinter.
+        La pantalla de 'Cargando...' se oculta SIEMPRE antes de intentar renderizar.
+        """
+        # Ocultar siempre el label de carga, pase lo que pase
+        if hasattr(self, "lbl_loading") and self.lbl_loading.winfo_exists():
+            self.lbl_loading.pack_forget()
+
+        # Destruir canvas anterior si existe
+        if self.fig_canvas:
+            try:
+                self.fig_canvas.get_tk_widget().destroy()
+            except Exception:
+                pass
+            self.fig_canvas = None
+
+        # Limpiar widgets previos del report_frame (fallback de texto)
+        for widget in self.report_frame.winfo_children():
+            try:
+                widget.destroy()
+            except Exception:
+                pass
+
         try:
             import matplotlib
             matplotlib.use("TkAgg")
             from matplotlib.figure import Figure
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-
-            if hasattr(self, "lbl_loading") and self.lbl_loading.winfo_exists():
-                self.lbl_loading.pack_forget()
-
-            if self.fig_canvas and self.fig_canvas.get_tk_widget().winfo_exists():
-                self.fig_canvas.get_tk_widget().destroy()
 
             # Crear figura Matplotlib (dos filas, una columna)
             fig = Figure(figsize=(8, 6), dpi=100)
@@ -468,68 +485,128 @@ class MonitorGUI:
             ax1.grid(True, linestyle="--", alpha=0.5, color="#cccccc")
 
             if x_congestion:
-                # Eje Y Izquierdo (Longitud de Cola - Cámara)
                 line1 = ax1.plot(x_congestion, y_cola, color="#007bff", linewidth=2, marker="o", label="Cola Promedio (Cámara)")
                 ax1.set_ylabel("Cola (Vehículos)", fontdict={"fontsize": 9}, color="#007bff")
                 ax1.tick_params(axis='y', labelcolor="#007bff", labelsize=8)
 
-                # Eje Y Derecho (Conteo - Espira)
                 ax1_sec = ax1.twinx()
                 line2 = ax1_sec.plot(x_congestion, y_conteo, color="#fd7e14", linewidth=1.5, linestyle="--", marker="s", label="Flujo (Espira)")
                 ax1_sec.set_ylabel("Vehículos/Min", fontdict={"fontsize": 9}, color="#fd7e14")
                 ax1_sec.tick_params(axis='y', labelcolor="#fd7e14", labelsize=8)
 
-                # Combinar leyendas
                 lines = line1 + line2
                 labels = [l.get_label() for l in lines]
                 ax1.legend(lines, labels, loc="upper left", fontsize=8)
-
                 ax1.set_title(f"Evolución de Tráfico en {posicion} (Intervalos de 30s)", fontdict={"fontsize": 11, "weight": "bold"}, color="#333333")
                 ax1.tick_params(axis='x', rotation=15, labelsize=8)
             else:
-                ax1.text(0.5, 0.5, "Sin datos de eventos para este eje", ha="center", va="center")
+                ax1.text(0.5, 0.5, "Sin datos de eventos para este eje.\nEjecuta la simulación y vuelve a generar el reporte.", ha="center", va="center", fontsize=10, color="#666666")
                 ax1.set_title(f"Histórico de Tráfico en {posicion}", fontdict={"fontsize": 11, "weight": "bold"})
 
-            # --- GRÁFICO 2: Métricas de Desempeño (Volumen y Latencia) ---
+            # --- GRÁFICO 2: Métricas de Desempeño ---
             ax2 = fig.add_subplot(212)
             ax2.set_facecolor("#ffffff")
             ax2.grid(True, linestyle="--", alpha=0.5, color="#cccccc")
 
             if x_perf:
-                # Eje Y Izquierdo (Volumen de solicitudes - barras)
                 bars = ax2.bar(x_perf, y_volume, color="#28a745", alpha=0.6, width=0.4, label="Solicitudes")
                 ax2.set_ylabel("Volumen Solicitudes", fontdict={"fontsize": 9}, color="#28a745")
                 ax2.tick_params(axis='y', labelcolor="#28a745", labelsize=8)
 
-                # Eje Y Derecho (Latencia promedio - líneas)
                 ax2_sec = ax2.twinx()
                 line_lat = ax2_sec.plot(x_perf, y_latency, color="#dc3545", linewidth=2, marker="d", label="Latencia")
                 ax2_sec.set_ylabel("Latencia (ms)", fontdict={"fontsize": 9}, color="#dc3545")
                 ax2_sec.tick_params(axis='y', labelcolor="#dc3545", labelsize=8)
 
-                # Leyenda combinada
                 lines2 = [bars] + line_lat
                 labels2 = [l.get_label() for l in lines2]
                 ax2.legend(lines2, labels2, loc="upper left", fontsize=8)
-
                 ax2.set_title("Volumen y Latencia Promedio de Procesamiento (Bloques 30s)", fontdict={"fontsize": 11, "weight": "bold"}, color="#333333")
                 ax2.tick_params(axis='x', rotation=15, labelsize=8)
             else:
-                ax2.text(0.5, 0.5, "Base de datos vacía. No hay métricas.", ha="center", va="center")
+                ax2.text(0.5, 0.5, "Base de datos vacía. No hay métricas disponibles.", ha="center", va="center", fontsize=10, color="#666666")
                 ax2.set_title("Rendimiento del Sistema", fontdict={"fontsize": 11, "weight": "bold"})
 
             fig.tight_layout()
 
-            # Incrustar en Tkinter
             self.fig_canvas = FigureCanvasTkAgg(fig, master=self.report_frame)
             self.fig_canvas.draw()
             self.fig_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
             self.status_label.config(text="Reporte visual generado.", foreground="green")
 
+        except ImportError:
+            # Fallback: mostrar datos en tabla de texto Tkinter si matplotlib no está disponible
+            self._mostrar_reporte_texto(posicion, x_congestion, y_cola, y_conteo, x_perf, y_volume, y_latency)
+
         except Exception as exc:
             print(f"[REPORTE] Error al renderizar gráfico: {exc}")
             self.status_label.config(text=f"Error render: {exc}", foreground="red")
+            # Intentar fallback de texto igualmente
+            self._mostrar_reporte_texto(posicion, x_congestion, y_cola, y_conteo, x_perf, y_volume, y_latency)
+
+    def _mostrar_reporte_texto(self, posicion, x_congestion, y_cola, y_conteo, x_perf, y_volume, y_latency):
+        """
+        Fallback: renderiza los datos de analítica como tablas de texto Tkinter nativo
+        cuando matplotlib no está disponible en el sistema.
+        """
+        from tkinter import scrolledtext
+
+        aviso = tk.Label(
+            self.report_frame,
+            text="⚠  matplotlib no encontrado — mostrando datos en modo texto",
+            bg="#fff3cd", fg="#856404", font=("Arial", 10, "italic"),
+            relief="flat", pady=6
+        )
+        aviso.pack(fill=tk.X, padx=10, pady=(8, 0))
+
+        # --- Tabla 1: Histórico de Congestión ---
+        tk.Label(self.report_frame,
+                 text=f"Histórico de Tráfico — {posicion} (Intervalos de 30s)",
+                 font=("Arial", 11, "bold"), bg="#f5f5f7", fg="#333333"
+                 ).pack(pady=(12, 2))
+
+        txt1 = scrolledtext.ScrolledText(
+            self.report_frame, height=8, bg="#ffffff",
+            fg="#222222", font=("Consolas", 10), relief="solid", bd=1
+        )
+        txt1.pack(fill=tk.X, padx=15, pady=(0, 8))
+
+        if x_congestion:
+            txt1.insert(tk.END, f"{'Intervalo':<12}  {'Cola Prom (veh)':<18}  {'Flujo Espira (veh)'}\n")
+            txt1.insert(tk.END, "-" * 52 + "\n")
+            for i, t in enumerate(x_congestion):
+                c = y_cola[i] if i < len(y_cola) else 0
+                e = y_conteo[i] if i < len(y_conteo) else 0
+                txt1.insert(tk.END, f"{t:<12}  {c:<18.1f}  {e:.0f}\n")
+        else:
+            txt1.insert(tk.END, "Sin datos para este eje. Ejecuta la simulación primero.\n")
+        txt1.configure(state="disabled")
+
+        # --- Tabla 2: Métricas de Desempeño ---
+        tk.Label(self.report_frame,
+                 text="Volumen y Latencia de Procesamiento (Bloques de 30s)",
+                 font=("Arial", 11, "bold"), bg="#f5f5f7", fg="#333333"
+                 ).pack(pady=(4, 2))
+
+        txt2 = scrolledtext.ScrolledText(
+            self.report_frame, height=8, bg="#ffffff",
+            fg="#222222", font=("Consolas", 10), relief="solid", bd=1
+        )
+        txt2.pack(fill=tk.X, padx=15, pady=(0, 8))
+
+        if x_perf:
+            txt2.insert(tk.END, f"{'Intervalo':<12}  {'Solicitudes':<14}  {'Latencia Prom (ms)'}\n")
+            txt2.insert(tk.END, "-" * 50 + "\n")
+            for i, t in enumerate(x_perf):
+                v = y_volume[i] if i < len(y_volume) else 0
+                l = y_latency[i] if i < len(y_latency) else 0
+                txt2.insert(tk.END, f"{t:<12}  {v:<14}  {l:.2f} ms\n")
+        else:
+            txt2.insert(tk.END, "Sin métricas disponibles. La base de datos está vacía.\n")
+        txt2.configure(state="disabled")
+
+        self.status_label.config(text="Reporte en modo texto generado.", foreground="#856404")
 
     def on_closing(self):
         print("\n[GUI] Cerrando ventana, deteniendo servicios...")
