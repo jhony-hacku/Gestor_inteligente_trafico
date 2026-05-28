@@ -264,30 +264,61 @@ class MonitorGUI:
     # ==============================================================================
     # INTEGRACIÓN DE MATPLOTLIB (ANALÍTICA Y REPORTES)
     # ==============================================================================
+    # Colores del tema oscuro para la ventana de reportes
+    _BG_DARK    = "#0d0d1f"
+    _BG_PANEL   = "#13132b"
+    _FG_TITLE   = "#e8e8ff"
+    _FG_MUTED   = "#8888aa"
+    _ACCENT     = "#00d4ff"
 
     def generar_reporte_visual(self):
-        """Abre la ventana de Analítica y lanza la consulta asíncrona."""
+        """Abre la ventana de Analítica premium y lanza la consulta asíncrona."""
+        BD = self._BG_DARK
+        BP = self._BG_PANEL
+
         if not hasattr(self, "report_win") or not self.report_win.winfo_exists():
             self.report_win = tk.Toplevel(self.root)
-            self.report_win.title("Analítica y Reportes - Gestor Inteligente de Tráfico")
-            self.report_win.geometry("900x700")
-            self.report_win.configure(bg="#f5f5f7")
+            self.report_win.title("Analítica y Reportes — Gestor Inteligente de Tráfico")
+            self.report_win.geometry("1000x780")
+            self.report_win.configure(bg=BD)
 
-            self.lbl_report_title = tk.Label(
-                self.report_win, text="Analítica Histórica y Métricas de Desempeño",
-                font=("Arial", 14, "bold"), bg="#f5f5f7", fg="#1a1a2e"
+            # --- Header premium ---
+            header = tk.Frame(self.report_win, bg=BP, pady=0)
+            header.pack(fill=tk.X)
+
+            tk.Label(
+                header,
+                text="📊  Analítica Histórica y Métricas de Desempeño",
+                font=("Arial", 15, "bold"), bg=BP, fg=self._FG_TITLE, pady=14, padx=20
+            ).pack(side=tk.LEFT)
+
+            tk.Label(
+                header, text="Gestor Inteligente de Tráfico · PC3",
+                font=("Arial", 9), bg=BP, fg=self._FG_MUTED, padx=20
+            ).pack(side=tk.RIGHT, pady=18)
+
+            # Separador
+            sep = tk.Frame(self.report_win, bg=self._ACCENT, height=2)
+            sep.pack(fill=tk.X)
+
+            # --- Panel de estadísticas (se llena tras consulta) ---
+            self.stats_frame = tk.Frame(self.report_win, bg=BD, pady=6)
+            self.stats_frame.pack(fill=tk.X, padx=20, pady=(8, 0))
+
+            # --- Área de gráficas scrollable ---
+            canvas_scroll = tk.Canvas(self.report_win, bg=BD, highlightthickness=0)
+            scrollbar = tk.Scrollbar(
+                self.report_win, orient="vertical", command=canvas_scroll.yview,
+                bg=BP, troughcolor=BD
             )
-            self.lbl_report_title.pack(pady=10)
-
-            # Contenedor scrollable para que el fallback de texto sea siempre visible
-            canvas_scroll = tk.Canvas(self.report_win, bg="#f5f5f7", highlightthickness=0)
-            scrollbar = tk.Scrollbar(self.report_win, orient="vertical", command=canvas_scroll.yview)
             canvas_scroll.configure(yscrollcommand=scrollbar.set)
             scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
             canvas_scroll.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-            self.report_frame = tk.Frame(canvas_scroll, bg="#f5f5f7")
-            self._scroll_win_id = canvas_scroll.create_window((0, 0), window=self.report_frame, anchor="nw")
+            self.report_frame = tk.Frame(canvas_scroll, bg=BD)
+            self._scroll_win_id = canvas_scroll.create_window(
+                (0, 0), window=self.report_frame, anchor="nw"
+            )
 
             def _on_frame_configure(event):
                 canvas_scroll.configure(scrollregion=canvas_scroll.bbox("all"))
@@ -299,35 +330,40 @@ class MonitorGUI:
             self._report_canvas_scroll = canvas_scroll
 
             self.lbl_loading = tk.Label(
-                self.report_frame, text="⏳  Consultando base de datos...",
-                font=("Arial", 12, "italic"), bg="#f5f5f7", fg="#555555"
+                self.report_frame,
+                text="⏳  Consultando base de datos...",
+                font=("Arial", 13, "italic"), bg=BD, fg=self._FG_MUTED
             )
-            self.lbl_loading.pack(expand=True, pady=40)
+            self.lbl_loading.pack(expand=True, pady=60)
 
             self.fig_canvas = None
         else:
             self.report_win.lift()
-            # Limpiar frame para nueva consulta
             for widget in self.report_frame.winfo_children():
+                try:
+                    widget.destroy()
+                except Exception:
+                    pass
+            for widget in self.stats_frame.winfo_children():
                 try:
                     widget.destroy()
                 except Exception:
                     pass
             self.fig_canvas = None
             self.lbl_loading = tk.Label(
-                self.report_frame, text="⏳  Consultando base de datos...",
-                font=("Arial", 12, "italic"), bg="#f5f5f7", fg="#555555"
+                self.report_frame,
+                text="⏳  Consultando base de datos...",
+                font=("Arial", 13, "italic"), bg=self._BG_DARK, fg=self._FG_MUTED
             )
-            self.lbl_loading.pack(expand=True, pady=40)
+            self.lbl_loading.pack(expand=True, pady=60)
 
         cruce = self.combo_int.get()
-        eje = self.combo_eje.get()
+        eje   = self.combo_eje.get()
         posicion = f"{cruce}{eje}"
 
-        self.status_label.config(text="Generando reporte visual...", foreground="blue")
+        self.status_label.config(text="Generando reporte visual...", foreground="#00aaff")
         print(f"[REPORTE] Iniciando consulta para posicion='{posicion}'")
 
-        # Ejecutar en hilo separado para no congelar la GUI ni ZMQ
         threading.Thread(target=self._query_data_thread, args=(posicion,), daemon=True).start()
 
     def _query_data_thread(self, posicion):
@@ -473,14 +509,13 @@ class MonitorGUI:
 
     def _update_charts_ui(self, posicion, x_congestion, y_cola, y_conteo, x_perf, y_volume, y_latency):
         """
-        Construye y renderiza las figuras en la ventana secundaria.
-        - No llama a matplotlib.use() para evitar ValueError en Linux.
-        - Si matplotlib falla, muestra tablas de texto Tkinter nativas.
-        - El label de carga se elimina SIEMPRE antes de renderizar.
+        Renderiza las gráficas con estilo oscuro profesional.
+        Fallback a tablas de texto si matplotlib no está disponible.
         """
+        BD = self._BG_DARK
         print(f"[REPORTE] _update_charts_ui llamado. congestion_pts={len(x_congestion)}, perf_pts={len(x_perf)}")
 
-        # Limpiar TODOS los widgets del report_frame (carga, canvas previo, texto previo)
+        # Limpiar widgets anteriores
         if self.fig_canvas:
             try:
                 self.fig_canvas.get_tk_widget().destroy()
@@ -495,70 +530,181 @@ class MonitorGUI:
                 pass
 
         try:
-            # NO llamar matplotlib.use() — causa ValueError si ya se cargó el backend
             from matplotlib.figure import Figure
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            from matplotlib.ticker import MaxNLocator
             print("[REPORTE] matplotlib importado OK")
 
-            # Crear figura Matplotlib (dos filas, una columna)
-            fig = Figure(figsize=(8, 6), dpi=100)
-            fig.patch.set_facecolor("#f5f5f7")
+            # ----------------------------------------------------------------
+            # Paleta y estilos (tema oscuro profesional)
+            # ----------------------------------------------------------------
+            BG_FIG  = "#0d0d1f"   # Fondo figura
+            BG_AX   = "#13132b"   # Fondo ejes
+            CLR_GRID= "#1e1e3a"   # Línea de cuadrícula
+            CLR_TXT = "#c8c8e8"   # Texto general
+            CLR_LBL = "#8888aa"   # Etiquetas de ejes
 
-            # --- GRÁFICO 1: Histórico de Congestión ---
+            # Gráfico 1
+            C_COLA   = "#00d4ff"  # Cian eléctrico  — Cola (cámara)
+            C_COLA_F = "#00d4ff22"  # Fill transparente
+            C_FLUJO  = "#ff8c42"  # Coral — Flujo (espira)
+            C_FLUJO_F= "#ff8c4222"
+
+            # Gráfico 2
+            C_VOL    = "#00e676"  # Verde menta — Solicitudes
+            C_VOL_F  = "#00e67644"
+            C_LAT    = "#ff4569"  # Rosa-rojo — Latencia
+
+            # ----------------------------------------------------------------
+            # Panel de estadísticas rápidas
+            # ----------------------------------------------------------------
+            stats = [
+                ("Eje vial",      posicion,                               "#00d4ff"),
+                ("Eventos analizados", str(len(x_congestion) + len(x_perf)), "#e8e8ff"),
+                ("Cola máx (veh)", f"{max(y_cola):.0f}" if y_cola else "N/A", "#ff8c42"),
+                ("Flujo máx",     f"{max(y_conteo):.0f}" if y_conteo else "N/A", "#ff8c42"),
+                ("Latencia prom",  f"{sum(y_latency)/len(y_latency):.1f} ms" if y_latency else "N/A", "#ff4569"),
+            ]
+            for lbl, val, col in stats:
+                card = tk.Frame(self.stats_frame, bg="#13132b", padx=14, pady=6, relief="flat")
+                card.pack(side=tk.LEFT, padx=6, pady=2)
+                tk.Label(card, text=lbl, font=("Arial", 8), bg="#13132b", fg="#8888aa").pack()
+                tk.Label(card, text=val, font=("Arial", 12, "bold"), bg="#13132b", fg=col).pack()
+
+            # ----------------------------------------------------------------
+            # Figura Matplotlib
+            # ----------------------------------------------------------------
+            fig = Figure(figsize=(9.6, 7.2), dpi=100)
+            fig.patch.set_facecolor(BG_FIG)
+            fig.subplots_adjust(left=0.08, right=0.92, top=0.93, bottom=0.10, hspace=0.42)
+
+            # Función auxiliar para estilizar ejes
+            def _style_ax(ax, title):
+                ax.set_facecolor(BG_AX)
+                ax.set_title(title, color=CLR_TXT, fontsize=11, fontweight="bold", pad=10)
+                ax.tick_params(colors=CLR_LBL, labelsize=8)
+                ax.xaxis.label.set_color(CLR_LBL)
+                ax.yaxis.label.set_color(CLR_LBL)
+                for spine in ax.spines.values():
+                    spine.set_edgecolor("#1e1e3a")
+                ax.grid(True, linestyle="--", linewidth=0.5, color=CLR_GRID, alpha=0.8)
+
+            # ============================================================
+            # GRÁFICO 1: Histórico de Congestión
+            # ============================================================
             ax1 = fig.add_subplot(211)
-            ax1.set_facecolor("#ffffff")
-            ax1.grid(True, linestyle="--", alpha=0.5, color="#cccccc")
+            _style_ax(ax1, f"Evolución de Tráfico — {posicion}  (intervalos 30 s)")
 
             if x_congestion:
-                line1 = ax1.plot(x_congestion, y_cola, color="#007bff", linewidth=2, marker="o", label="Cola Promedio (Cámara)")
-                ax1.set_ylabel("Cola (Vehículos)", fontdict={"fontsize": 9}, color="#007bff")
-                ax1.tick_params(axis='y', labelcolor="#007bff", labelsize=8)
+                xs = list(range(len(x_congestion)))  # índices numéricos para evitar solapamiento
 
-                ax1_sec = ax1.twinx()
-                line2 = ax1_sec.plot(x_congestion, y_conteo, color="#fd7e14", linewidth=1.5, linestyle="--", marker="s", label="Flujo (Espira)")
-                ax1_sec.set_ylabel("Vehículos/Min", fontdict={"fontsize": 9}, color="#fd7e14")
-                ax1_sec.tick_params(axis='y', labelcolor="#fd7e14", labelsize=8)
+                # --- Cola (cámara) — línea cian con área rellena ---
+                ax1.fill_between(xs, y_cola, color=C_COLA_F)
+                ax1.plot(xs, y_cola, color=C_COLA, linewidth=2.0,
+                         marker="o", markersize=4, markerfacecolor=C_COLA,
+                         markeredgecolor=BG_FIG, label="Cola prom. (cámara)")
+                ax1.set_ylabel("Cola  (vehículos)", color=C_COLA, fontsize=9)
+                ax1.tick_params(axis='y', labelcolor=C_COLA, labelsize=8)
 
-                lines = line1 + line2
-                labels = [l.get_label() for l in lines]
-                ax1.legend(lines, labels, loc="upper left", fontsize=8)
-                ax1.set_title(f"Evolución de Tráfico en {posicion} (Intervalos de 30s)", fontdict={"fontsize": 11, "weight": "bold"}, color="#333333")
-                ax1.tick_params(axis='x', rotation=15, labelsize=8)
+                # --- Flujo (espira) — línea coral con área rellena — eje derecho ---
+                ax1r = ax1.twinx()
+                ax1r.set_facecolor(BG_AX)
+                ax1r.fill_between(xs, y_conteo, color=C_FLUJO_F)
+                ax1r.plot(xs, y_conteo, color=C_FLUJO, linewidth=1.8,
+                          linestyle="--", marker="s", markersize=3,
+                          markerfacecolor=C_FLUJO, markeredgecolor=BG_FIG,
+                          label="Flujo (espira)")
+                ax1r.set_ylabel("Vehículos / min", color=C_FLUJO, fontsize=9)
+                ax1r.tick_params(axis='y', labelcolor=C_FLUJO, labelsize=8)
+                for spine in ax1r.spines.values():
+                    spine.set_edgecolor("#1e1e3a")
+
+                # Eje X: mostrar máximo 10 etiquetas de tiempo
+                step = max(1, len(x_congestion) // 10)
+                tick_pos = list(range(0, len(xs), step))
+                ax1.set_xticks(tick_pos)
+                ax1.set_xticklabels(
+                    [x_congestion[i] for i in tick_pos],
+                    rotation=30, ha="right", fontsize=8, color=CLR_LBL
+                )
+
+                # Leyenda combinada
+                h1, l1 = ax1.get_legend_handles_labels()
+                h2, l2 = ax1r.get_legend_handles_labels()
+                ax1.legend(h1 + h2, l1 + l2, loc="upper left", fontsize=8,
+                           facecolor="#1e1e3a", edgecolor="#333355",
+                           labelcolor=CLR_TXT, framealpha=0.85)
             else:
-                ax1.text(0.5, 0.5, "Sin datos de eventos para este eje.\nEjecuta la simulación y vuelve a generar el reporte.", ha="center", va="center", fontsize=10, color="#666666")
-                ax1.set_title(f"Histórico de Tráfico en {posicion}", fontdict={"fontsize": 11, "weight": "bold"})
+                ax1.text(0.5, 0.5,
+                         "Sin datos para este eje vial.\nEjecuta la simulación y vuelve a generar el reporte.",
+                         ha="center", va="center", fontsize=11, color="#8888aa",
+                         transform=ax1.transAxes)
 
-            # --- GRÁFICO 2: Métricas de Desempeño ---
+            # ============================================================
+            # GRÁFICO 2: Volumen y Latencia
+            # ============================================================
             ax2 = fig.add_subplot(212)
-            ax2.set_facecolor("#ffffff")
-            ax2.grid(True, linestyle="--", alpha=0.5, color="#cccccc")
+            _style_ax(ax2, "Volumen de Solicitudes  y  Latencia de Procesamiento  (bloques 30 s)")
 
             if x_perf:
-                bars = ax2.bar(x_perf, y_volume, color="#28a745", alpha=0.6, width=0.4, label="Solicitudes")
-                ax2.set_ylabel("Volumen Solicitudes", fontdict={"fontsize": 9}, color="#28a745")
-                ax2.tick_params(axis='y', labelcolor="#28a745", labelsize=8)
+                xs2 = list(range(len(x_perf)))
+                bar_w = 0.6
 
-                ax2_sec = ax2.twinx()
-                line_lat = ax2_sec.plot(x_perf, y_latency, color="#dc3545", linewidth=2, marker="d", label="Latencia")
-                ax2_sec.set_ylabel("Latencia (ms)", fontdict={"fontsize": 9}, color="#dc3545")
-                ax2_sec.tick_params(axis='y', labelcolor="#dc3545", labelsize=8)
+                # --- Barras de volumen — eje izquierdo ---
+                bars = ax2.bar(xs2, y_volume, width=bar_w, color=C_VOL,
+                               alpha=0.75, label="Solicitudes", zorder=3)
+                ax2.set_ylabel("Nú m. solicitudes", color=C_VOL, fontsize=9)
+                ax2.tick_params(axis='y', labelcolor=C_VOL, labelsize=8)
 
-                lines2 = [bars] + line_lat
-                labels2 = [l.get_label() for l in lines2]
-                ax2.legend(lines2, labels2, loc="upper left", fontsize=8)
-                ax2.set_title("Volumen y Latencia Promedio de Procesamiento (Bloques 30s)", fontdict={"fontsize": 11, "weight": "bold"}, color="#333333")
-                ax2.tick_params(axis='x', rotation=15, labelsize=8)
+                # Valor encima de cada barra
+                for bar in bars:
+                    h = bar.get_height()
+                    if h > 0:
+                        ax2.text(bar.get_x() + bar.get_width() / 2, h + max(y_volume) * 0.01,
+                                 f"{int(h)}", ha="center", va="bottom",
+                                 fontsize=7, color=C_VOL, fontweight="bold")
+
+                # --- Línea de latencia — eje derecho ---
+                ax2r = ax2.twinx()
+                ax2r.set_facecolor(BG_AX)
+                ax2r.fill_between(xs2, y_latency, color="#ff456920")
+                ax2r.plot(xs2, y_latency, color=C_LAT, linewidth=2.2,
+                          marker="D", markersize=5,
+                          markerfacecolor=C_LAT, markeredgecolor=BG_FIG,
+                          label="Latencia prom.", zorder=4)
+                ax2r.set_ylabel("Latencia  (ms)", color=C_LAT, fontsize=9)
+                ax2r.tick_params(axis='y', labelcolor=C_LAT, labelsize=8)
+                for spine in ax2r.spines.values():
+                    spine.set_edgecolor("#1e1e3a")
+
+                # Eje X: máximo 10 etiquetas
+                step2 = max(1, len(x_perf) // 10)
+                tick_pos2 = list(range(0, len(xs2), step2))
+                ax2.set_xticks(tick_pos2)
+                ax2.set_xticklabels(
+                    [x_perf[i] for i in tick_pos2],
+                    rotation=30, ha="right", fontsize=8, color=CLR_LBL
+                )
+
+                # Leyenda combinada
+                h1, l1 = ax2.get_legend_handles_labels()
+                h2, l2 = ax2r.get_legend_handles_labels()
+                ax2.legend(h1 + h2, l1 + l2, loc="upper left", fontsize=8,
+                           facecolor="#1e1e3a", edgecolor="#333355",
+                           labelcolor=CLR_TXT, framealpha=0.85)
             else:
-                ax2.text(0.5, 0.5, "Base de datos vacía. No hay métricas disponibles.", ha="center", va="center", fontsize=10, color="#666666")
-                ax2.set_title("Rendimiento del Sistema", fontdict={"fontsize": 11, "weight": "bold"})
+                ax2.text(0.5, 0.5,
+                         "Base de datos vacía. No hay métricas disponibles.",
+                         ha="center", va="center", fontsize=11, color="#8888aa",
+                         transform=ax2.transAxes)
 
-            fig.tight_layout()
-
+            # Incrustar en Tkinter
             self.fig_canvas = FigureCanvasTkAgg(fig, master=self.report_frame)
             self.fig_canvas.draw()
+            self.fig_canvas.get_tk_widget().configure(bg=BD)
             self.fig_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-            self.status_label.config(text="Reporte visual generado.", foreground="green")
+            self.status_label.config(text="✓  Reporte visual generado.", foreground="#00cc66")
 
         except ImportError as ie:
             print(f"[REPORTE] matplotlib no disponible: {ie}")
