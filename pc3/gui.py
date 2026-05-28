@@ -438,6 +438,8 @@ class MonitorGUI:
 
         except Exception as e:
             print(f"[REPORTE] Error procesando reporte: {e}")
+            # Desvanecer la pantalla de carga y pintar estados vacíos
+            self.root.after(0, lambda: self._update_charts_ui(posicion, [], [], [], [], [], []))
             self.root.after(0, lambda: self.status_label.config(
                 text=f"Error en reporte: {e}", foreground="red"
             ))
