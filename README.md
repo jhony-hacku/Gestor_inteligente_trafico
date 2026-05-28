@@ -1,28 +1,28 @@
 # Gestor Inteligente de Tráfico Urbano
 
-Sistema distribuido de gestión de tráfico urbano sobre una cuadrícula **5×5** de intersecciones, implementado en tres nodos (PC1, PC2, PC3) comunicados mediante **ZeroMQ**.
+Sistema distribuido de gestión de tráfico urbano sobre una cuadrícula **5×5** de intersecciones, implementado en tres nodos (PC1, PC2, PC3) comunicados mediante **ZeroMQ** con cifrado **CurveZMQ**.
 
 ---
 
 ## Arquitectura del Sistema
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  PC1 · 10.43.99.192           PC2 · 10.43.100.91        PC3 · 10.43.99.78  │
-│                                                                         │
-│  150 Sensores (hilos)         Motor de Reglas             Base de Datos │
-│  ┌──────────────────┐         ┌─────────────────────┐   ┌────────────┐ │
-│  │ CAM / ESP / GPS  │──SUB────│  Analítica Avanzada │─PUSH─│  SQLite  │ │
-│  │ por eje (_NS/_EO)│         │  + Semáforos        │   │ Principal  │ │
-│  └──────────────────┘         │  + Réplica DB local │   └────────────┘ │
-│         │                     │  + Heartbeat        │         │        │
-│  ┌──────────────┐             │  + Failover/Failback│    ┌────┴─────┐  │
-│  │  Broker ZMQ  │       ◄─────│  ServidorControl    │    │   GUI    │  │
-│  │  XSUB/XPUB   │             │  ServidorConsulta   │    │ Tkinter  │  │
-│  │  Heartbeat   │             └─────────────────────┘    └──────────┘  │
-│  │  Servidor    │                     │ REQ/REP (5563)                  │
-│  └──────────────┘             ◄───────┘  comandos  ─────────────────── │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  PC1 · 10.43.99.192            PC2 · 10.43.100.91        PC3 · 10.43.99.78  │
+│                                                                              │
+│  150 Sensores (hilos)          Motor de Reglas             Base de Datos     │
+│  ┌───────────────────┐         ┌──────────────────────┐   ┌───────────────┐  │
+│  │ CAM / ESP / GPS   │──SUB────│  Analítica Avanzada  │─PUSH─│  SQLite   │  │
+│  │ por eje (_NS/_EO) │         │  + Semáforos         │   │  Principal    │  │
+│  └───────────────────┘         │  + Réplica DB local  │   └───────────────┘  │
+│          │                     │  + Heartbeat         │          │           │
+│  ┌───────────────┐             │  + Failover/Failback │   ┌──────┴────────┐  │
+│  │  Broker ZMQ   │       ◄─────│  ServidorControl     │   │  GUI Tkinter  │  │
+│  │  XSUB/XPUB   │             │  ServidorConsulta    │   │  · Grilla 5×5 │  │
+│  │  Heartbeat    │             └──────────────────────┘   │  · Analítica  │  │
+│  │  CurveZMQ    │                      │ REQ/REP (5563)   │  · Reportes   │  │
+│  └───────────────┘             ◄───────┘  comandos        └───────────────┘  │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Comunicación entre nodos
@@ -36,6 +36,8 @@ Sistema distribuido de gestión de tráfico urbano sobre una cuadrícula **5×5*
 | PC2 → PC3 | REQ → REP | 5564 | Consulta de réplica (failover de lectura) |
 | PC2 ↔ PC1 | REQ ↔ REP | 5565 | Heartbeat activo (sondeo PC1) |
 | PC2 ↔ PC3 | REQ ↔ REP | 5566 | Heartbeat activo (sondeo PC3) |
+
+> Todos los canales entre nodos usan **CurveZMQ** (cifrado + autenticación de claves públicas).
 
 ---
 
@@ -93,7 +95,7 @@ Consume los eventos del broker de PC1, aplica reglas de analítica avanzada en t
 
 **Motor de Reglas Avanzado (`motor_reglas.py`):**
 
-El motor ahora utiliza una **memoria temporal por eje** que almacena las últimas lecturas de los 3 sensores. La decisión se toma por **cascada de prioridades** sobre el eje al completo, no por sensor individual:
+El motor utiliza una **memoria temporal por eje** que almacena las últimas lecturas de los 3 sensores. La decisión se toma por **cascada de prioridades** sobre el eje al completo:
 
 | Prioridad | Regla | Umbral |
 |-----------|-------|--------|
@@ -116,7 +118,7 @@ El motor ahora utiliza una **memoria temporal por eje** que almacena las última
 
 - Sondea PC1 (puerto 5565) y PC3 (puerto 5566) cada 10 segundos.
 - El objeto `EstadoNodos` centraliza la disponibilidad de ambos nodos (thread-safe).
-- La `Persistencia` y el `Suscriptor` consultan `EstadoNodos` para tomar decisiones sin abrir sockets adicionales.
+- La `Persistencia` y el `Suscriptor` consultan `EstadoNodos` sin abrir sockets adicionales.
 - Detecta y notifica en consola las transiciones SUBIDA/CAÍDA de cada nodo.
 
 **Servidor de Consulta de Réplica (`servidor_consulta.py`):**
@@ -147,13 +149,13 @@ pc2/
 
 ### PC3 — Servidor de Base de Datos (`10.43.99.78`)
 
-Recibe todos los eventos procesados de PC2 vía PULL, los almacena en SQLite, ofrece monitoreo con conmutación dinámica de fuente de datos (failover a réplica de PC2) y una **Interfaz Gráfica (GUI)** de monitoreo y control.
+Recibe todos los eventos procesados de PC2 vía PULL, los almacena en SQLite, ofrece monitoreo con conmutación dinámica de fuente de datos (failover a réplica de PC2), y una **Interfaz Gráfica (GUI) de monitoreo, control y analítica visual**.
 
 **Tablas SQLite (Base de Datos Principal):**
 
 | Tabla | Contenido |
-|-------|-----------| 
-| `eventos` | Histórico completo con `estado_trafico` y `motivo` |
+|-------|-----------|
+| `eventos` | Histórico completo con `estado_trafico`, `motivo`, `datos_json`, `timestamp_ingreso` |
 | `estados` | Último estado conocido por eje de intersección (upsert) |
 | `semaforos` | Registro de cada cambio de semáforo |
 
@@ -166,16 +168,16 @@ Recibe todos los eventos procesados de PC2 vía PULL, los almacena en SQLite, of
 
 **Interfaz Gráfica de Usuario (`gui.py`):**
 
-Nueva interfaz Tkinter que reemplaza la consola interactiva del hilo principal.
+Interfaz Tkinter completa que reemplaza la consola interactiva del hilo principal.
 
 | Panel | Descripción |
 |-------|-------------|
-| Grilla 5×5 de Intersecciones | Cada celda muestra indicadores de color independientes para NS y EO |
-| Consola del Operador | Selector de intersección, selector de eje, botón OLA_VERDE y botón NORMAL |
-| Tab "Decisiones y Semáforos" | Log en tiempo real de cada cambio de estado (solo cuando cambia) |
-| Tab "Heartbeat y Failover" | LED de estado de red, alertas de failover y reconexión |
+| **Grilla 5×5** | Cada celda muestra indicadores de color circulares independientes para NS y EO, actualizados cada 500 ms |
+| **Consola del Operador** | Selector de intersección, selector de eje vial, botones `OLA_VERDE` y `NORMAL` |
+| **LED de Red** | Indicador en tiempo real de estado de conexión (verde = OK, rojo = failover activo) |
+| **Módulo de Analítica Visual** | Ventana dedicada con gráficas históricas interactivas generadas con Matplotlib |
 
-**Colores de los Indicadores:**
+**Colores de los Indicadores de Intersección:**
 
 | Color | Estado |
 |-------|--------|
@@ -184,26 +186,71 @@ Nueva interfaz Tkinter que reemplaza la consola interactiva del hilo principal.
 | 🟡 Amarillo | `NORMAL` |
 | ⬛ Gris | Sin datos reportados aún |
 
-**Arquitectura de la GUI (seguridad entre hilos):**
-- Consulta la BD local directamente (`_leer_estados_local`) cada 500 ms usando `root.after()`, sin bloquear la ventana principal.
-- El envío de comandos ZMQ (OLA_VERDE/NORMAL) se ejecuta en un hilo daemon independiente con su propio socket REQ, para no interferir con los hilos del backend.
-- El LED de estado de red refleja el flag `_db_ok` del `MonitorComandos` en tiempo real.
+---
+
+## Módulo de Analítica Visual e Histórica (PC3)
+
+Al presionar **"Generar Reporte Visual"** en la consola del operador, se abre una ventana dedicada con tema oscuro profesional que muestra:
+
+### Panel de Estadísticas Rápidas
+Cinco tarjetas con métricas del último reporte:
+- Eje vial analizado
+- Total de eventos procesados
+- Cola máxima registrada (vehículos)
+- Flujo máximo de espira
+- Latencia promedio de procesamiento (ms)
+
+### Gráfico 1 — Evolución de Tráfico
+Evolución histórica del eje seleccionado en intervalos de 30 segundos:
+- **Línea cian** (eje izquierdo): Cola promedio por intervalo (datos de cámara)
+- **Línea coral** (eje derecho): Flujo vehicular acumulado (datos de espira)
+- Área rellena semitransparente bajo cada curva
+
+### Gráfico 2 — Rendimiento del Sistema
+Métricas de desempeño del pipeline de procesamiento en bloques de 30 segundos:
+- **Barras verdes** (eje izquierdo): Volumen de solicitudes procesadas, con etiqueta por barra
+- **Línea rosa-rojo** (eje derecho): Latencia promedio en milisegundos
+
+### Características técnicas de la analítica
+- Consulta SQLite ejecutada en **hilo daemon** independiente — no bloquea la GUI ni los sockets ZMQ
+- Máximo **10 etiquetas en el eje X** para evitar solapamiento de timestamps
+- **Fallback automático a tablas de texto** si matplotlib no está instalado
+- Paleta oscura profesional: `#0d0d1f` / `#13132b` con acento cian `#00d4ff`
 
 **Estructura:**
 ```
 pc3/
 ├── servidor_db.py             # Punto de entrada (lanza GUI + 3 hilos backend)
-├── gui.py                     # Interfaz Gráfica Tkinter (grilla 5x5 + consola)
+├── gui.py                     # GUI Tkinter: grilla 5×5 + consola + analítica visual
 ├── requirements.txt
 ├── config/
 │   └── pc3_config.json        # Puertos, IP de PC2, failover
 ├── servicios/
 │   ├── receptor.py            # Hilo PULL :5561 ← eventos de PC2
 │   ├── almacenador.py         # Hilo escritura SQLite (batch 50 eventos)
-│   └── monitor_comandos.py    # Monitoreo + failover DB + REQ → PC2
+│   ├── monitor_comandos.py    # Monitoreo + failover DB + REQ → PC2
+│   └── cripto.py              # Utilidades CurveZMQ
+├── keys/                      # Claves CurveZMQ de PC3
 └── db/
     └── trafico_principal.db   # BD principal (creada en runtime)
 ```
+
+---
+
+## Seguridad — CurveZMQ
+
+Todos los canales de comunicación entre nodos están protegidos con **CurveZMQ** (Curve25519 + Salsa20):
+
+```bash
+# Generar claves para todos los nodos
+python3 generar_claves.py
+```
+
+Esto crea el directorio `keys/` en cada nodo con:
+- `server.key` / `server.key_secret` — clave del servidor
+- `client.key` / `client.key_secret` — clave del cliente
+
+Las claves públicas de cada nodo deben distribuirse a los demás antes del arranque.
 
 ---
 
@@ -257,10 +304,13 @@ Modifica **un solo archivo por nodo** antes de ejecutar:
 ## Instalación y Ejecución
 
 ### Requisitos
-- Python 3.10+
-- `pyzmq >= 25.0`
-- `sqlite3` — incluido en Python
-- `tkinter` — incluido en Python (para la GUI de PC3)
+
+| Paquete | Nodo | Descripción |
+|---------|------|-------------|
+| `pyzmq >= 25.0` | PC1, PC2, PC3 | Mensajería ZeroMQ + CurveZMQ |
+| `matplotlib >= 3.5` | PC3 | Gráficas de analítica visual |
+| `tkinter` | PC3 | GUI (incluido en Python estándar) |
+| `sqlite3` | PC2, PC3 | BD relacional (incluido en Python) |
 
 ### PC1 (en `10.43.99.192`)
 
@@ -283,6 +333,7 @@ python3 analitica.py
 ```bash
 cd Gestor_inteligente_trafico/pc3
 pip3 install -r requirements.txt
+pip3 install matplotlib          # Requerido para el módulo de analítica visual
 python3 servidor_db.py
 ```
 
@@ -311,12 +362,40 @@ sudo ufw allow 5566/tcp
 
 ## Interfaz Gráfica (PC3)
 
-Al ejecutar `servidor_db.py`, se abre automáticamente la ventana de monitoreo. La consola interactiva anterior ha sido reemplazada por la GUI.
+Al ejecutar `servidor_db.py`, se abre automáticamente la ventana de monitoreo.
 
-- **Grilla 5×5**: Cada celda de intersección muestra dos indicadores de color (NS y EO) actualizados cada 500 ms.
-- **Consola del Operador** (panel lateral derecho): Selecciona intersección, eje, y envía comandos `OLA_VERDE` o `NORMAL` directamente a PC2.
-- **Tab Decisiones**: Log de cada cambio de estado detectado, con posición, motivo, sensor disparador y timestamp.
-- **Tab Heartbeat**: LED de estado (verde = conectado, rojo = failover activo), con log de alertas de caídas y reconexiones automáticas.
+### Ventana Principal
+
+- **Grilla 5×5**: Cada celda de intersección muestra dos indicadores circulares de color (NS y EO), actualizados cada 500 ms. Estilo plano con fondo neutro y espaciado amplio para legibilidad.
+- **Consola del Operador** (panel lateral derecho): Selecciona intersección + eje y envía comandos `OLA_VERDE` o `NORMAL` directamente a PC2.
+- **LED de estado de red**: Indicador circular (verde = heartbeat OK, rojo = failover activo) con etiqueta de estado.
+- **Botón "Generar Reporte Visual"**: Abre la ventana de analítica histórica.
+
+### Ventana de Analítica (tema oscuro)
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ 📊 Analítica Histórica y Métricas de Desempeño   PC3    │
+│══════════════════════════════════════════════════════════│
+│ [Eje vial] [Eventos] [Cola máx] [Flujo máx] [Latencia]  │
+│                                                          │
+│  ┌─────────────────────────────────────────────────────┐ │
+│  │ Evolución de Tráfico — INT_A1_NS (intervalos 30s)   │ │
+│  │  ▓▓ Cola prom. (cámara) ──── Flujo (espira)        │ │
+│  └─────────────────────────────────────────────────────┘ │
+│  ┌─────────────────────────────────────────────────────┐ │
+│  │ Volumen de Solicitudes y Latencia (bloques 30s)     │ │
+│  │  ▓▓ Solicitudes  ◆─── Latencia prom.               │ │
+│  └─────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Arquitectura de la GUI (seguridad entre hilos)
+
+- **Refresco de grilla**: Consulta la BD local cada 500 ms usando `root.after()` — nunca bloquea el hilo principal.
+- **Comandos ZMQ**: Se ejecutan en un hilo daemon independiente con su propio socket REQ.
+- **Analítica asíncrona**: La consulta SQLite y el cálculo de métricas se hacen en un hilo daemon; los resultados se pasan al hilo de la GUI mediante `root.after(0, callback)`.
+- **Fallback de texto**: Si matplotlib no está disponible, los datos se muestran automáticamente en tablas de texto con `ScrolledText`.
 
 ---
 
@@ -389,7 +468,10 @@ python3 pc3/test_pc3_local.py
 ### PC3
 ```
 [ALMACENADOR] +50 eventos | Total: 150
-[GUI] Actualizando grilla — 25 intersecciones, 50 ejes monitoreados
+[REPORTE] Iniciando consulta para posicion='INT_A1_NS'
+[REPORTE] matplotlib importado OK
+[REPORTE] _update_charts_ui llamado. congestion_pts=12, perf_pts=8
+[GUI] ✓ Reporte visual generado.
 ```
 
 ---
@@ -405,3 +487,4 @@ python3 pc3/test_pc3_local.py
 | PC2 caído | PC1 sigue generando (el broker descarta si no hay suscriptor); PC3 muestra indicadores en Gris |
 | Sensor caído | El hilo de ese sensor se detiene; los otros 5 de la misma intersección siguen activos |
 | Red intermitente | El socket REQ de heartbeat se recrea automáticamente tras cada timeout |
+| matplotlib no instalado | La GUI cambia automáticamente al modo de tablas de texto (fallback nativo Tkinter) |
