@@ -272,36 +272,61 @@ class MonitorGUI:
             self.report_win.title("Analítica y Reportes - Gestor Inteligente de Tráfico")
             self.report_win.geometry("900x700")
             self.report_win.configure(bg="#f5f5f7")
-            
+
             self.lbl_report_title = tk.Label(
-                self.report_win, text="Analítica Histórica y Métricas de Desempeño", 
-                font=("Arial", 14, "bold"), bg="#f5f5f7", fg="#333333"
+                self.report_win, text="Analítica Histórica y Métricas de Desempeño",
+                font=("Arial", 14, "bold"), bg="#f5f5f7", fg="#1a1a2e"
             )
             self.lbl_report_title.pack(pady=10)
-            
-            self.report_frame = tk.Frame(self.report_win, bg="#f5f5f7")
-            self.report_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=5)
-            
+
+            # Contenedor scrollable para que el fallback de texto sea siempre visible
+            canvas_scroll = tk.Canvas(self.report_win, bg="#f5f5f7", highlightthickness=0)
+            scrollbar = tk.Scrollbar(self.report_win, orient="vertical", command=canvas_scroll.yview)
+            canvas_scroll.configure(yscrollcommand=scrollbar.set)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            canvas_scroll.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+            self.report_frame = tk.Frame(canvas_scroll, bg="#f5f5f7")
+            self._scroll_win_id = canvas_scroll.create_window((0, 0), window=self.report_frame, anchor="nw")
+
+            def _on_frame_configure(event):
+                canvas_scroll.configure(scrollregion=canvas_scroll.bbox("all"))
+            def _on_canvas_configure(event):
+                canvas_scroll.itemconfig(self._scroll_win_id, width=event.width)
+
+            self.report_frame.bind("<Configure>", _on_frame_configure)
+            canvas_scroll.bind("<Configure>", _on_canvas_configure)
+            self._report_canvas_scroll = canvas_scroll
+
             self.lbl_loading = tk.Label(
-                self.report_frame, text="Cargando y procesando datos asíncronamente...", 
-                font=("Arial", 11, "italic"), bg="#f5f5f7", fg="#666666"
+                self.report_frame, text="⏳  Consultando base de datos...",
+                font=("Arial", 12, "italic"), bg="#f5f5f7", fg="#555555"
             )
-            self.lbl_loading.pack(expand=True)
-            
+            self.lbl_loading.pack(expand=True, pady=40)
+
             self.fig_canvas = None
         else:
             self.report_win.lift()
-            if hasattr(self, "lbl_loading") and self.lbl_loading.winfo_exists():
-                self.lbl_loading.pack(expand=True)
-            if self.fig_canvas and self.fig_canvas.get_tk_widget().winfo_exists():
-                self.fig_canvas.get_tk_widget().pack_forget()
+            # Limpiar frame para nueva consulta
+            for widget in self.report_frame.winfo_children():
+                try:
+                    widget.destroy()
+                except Exception:
+                    pass
+            self.fig_canvas = None
+            self.lbl_loading = tk.Label(
+                self.report_frame, text="⏳  Consultando base de datos...",
+                font=("Arial", 12, "italic"), bg="#f5f5f7", fg="#555555"
+            )
+            self.lbl_loading.pack(expand=True, pady=40)
 
         cruce = self.combo_int.get()
         eje = self.combo_eje.get()
         posicion = f"{cruce}{eje}"
 
         self.status_label.config(text="Generando reporte visual...", foreground="blue")
-        
+        print(f"[REPORTE] Iniciando consulta para posicion='{posicion}'")
+
         # Ejecutar en hilo separado para no congelar la GUI ni ZMQ
         threading.Thread(target=self._query_data_thread, args=(posicion,), daemon=True).start()
 
@@ -437,24 +462,25 @@ class MonitorGUI:
             ))
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             print(f"[REPORTE] Error procesando reporte: {e}")
             # Desvanecer la pantalla de carga y pintar estados vacíos
-            self.root.after(0, lambda: self._update_charts_ui(posicion, [], [], [], [], [], []))
-            self.root.after(0, lambda: self.status_label.config(
-                text=f"Error en reporte: {e}", foreground="red"
+            self.root.after(0, lambda err=e: self.status_label.config(
+                text=f"Error consulta: {err}", foreground="red"
             ))
+            self.root.after(0, lambda: self._update_charts_ui(posicion, [], [], [], [], [], []))
 
     def _update_charts_ui(self, posicion, x_congestion, y_cola, y_conteo, x_perf, y_volume, y_latency):
         """
         Construye y renderiza las figuras en la ventana secundaria.
-        Si matplotlib no está instalado, muestra los datos en una tabla de texto nativa de Tkinter.
-        La pantalla de 'Cargando...' se oculta SIEMPRE antes de intentar renderizar.
+        - No llama a matplotlib.use() para evitar ValueError en Linux.
+        - Si matplotlib falla, muestra tablas de texto Tkinter nativas.
+        - El label de carga se elimina SIEMPRE antes de renderizar.
         """
-        # Ocultar siempre el label de carga, pase lo que pase
-        if hasattr(self, "lbl_loading") and self.lbl_loading.winfo_exists():
-            self.lbl_loading.pack_forget()
+        print(f"[REPORTE] _update_charts_ui llamado. congestion_pts={len(x_congestion)}, perf_pts={len(x_perf)}")
 
-        # Destruir canvas anterior si existe
+        # Limpiar TODOS los widgets del report_frame (carga, canvas previo, texto previo)
         if self.fig_canvas:
             try:
                 self.fig_canvas.get_tk_widget().destroy()
@@ -462,7 +488,6 @@ class MonitorGUI:
                 pass
             self.fig_canvas = None
 
-        # Limpiar widgets previos del report_frame (fallback de texto)
         for widget in self.report_frame.winfo_children():
             try:
                 widget.destroy()
@@ -470,10 +495,10 @@ class MonitorGUI:
                 pass
 
         try:
-            import matplotlib
-            matplotlib.use("TkAgg")
+            # NO llamar matplotlib.use() — causa ValueError si ya se cargó el backend
             from matplotlib.figure import Figure
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            print("[REPORTE] matplotlib importado OK")
 
             # Crear figura Matplotlib (dos filas, una columna)
             fig = Figure(figsize=(8, 6), dpi=100)
@@ -535,11 +560,14 @@ class MonitorGUI:
 
             self.status_label.config(text="Reporte visual generado.", foreground="green")
 
-        except ImportError:
+        except ImportError as ie:
+            print(f"[REPORTE] matplotlib no disponible: {ie}")
             # Fallback: mostrar datos en tabla de texto Tkinter si matplotlib no está disponible
             self._mostrar_reporte_texto(posicion, x_congestion, y_cola, y_conteo, x_perf, y_volume, y_latency)
 
         except Exception as exc:
+            import traceback
+            traceback.print_exc()
             print(f"[REPORTE] Error al renderizar gráfico: {exc}")
             self.status_label.config(text=f"Error render: {exc}", foreground="red")
             # Intentar fallback de texto igualmente
@@ -551,14 +579,15 @@ class MonitorGUI:
         cuando matplotlib no está disponible en el sistema.
         """
         from tkinter import scrolledtext
+        print("[REPORTE] Renderizando modo texto (fallback).")
 
         aviso = tk.Label(
             self.report_frame,
-            text="⚠  matplotlib no encontrado — mostrando datos en modo texto",
-            bg="#fff3cd", fg="#856404", font=("Arial", 10, "italic"),
-            relief="flat", pady=6
+            text="⚠️  Sin gráficas — mostrando datos en modo texto",
+            bg="#fff3cd", fg="#7d4e00", font=("Arial", 11, "bold"),
+            relief="solid", bd=1, pady=8
         )
-        aviso.pack(fill=tk.X, padx=10, pady=(8, 0))
+        aviso.pack(fill=tk.X, padx=10, pady=(8, 4))
 
         # --- Tabla 1: Histórico de Congestión ---
         tk.Label(self.report_frame,
