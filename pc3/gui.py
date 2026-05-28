@@ -1,10 +1,11 @@
 import tkinter as tk
 from tkinter import ttk
-from tkinter import scrolledtext
 import threading
 from pathlib import Path
 import zmq
-from datetime import datetime
+from datetime import datetime, timezone
+import json
+import sqlite3
 
 # Directorio de claves CurveZMQ de PC3 (relativo a gui.py)
 _KEYS_DIR = Path(__file__).parent / "keys"
@@ -18,7 +19,7 @@ class MonitorGUI:
         self.monitor = monitor
         self.stop_event = stop_event
         self.root.title("PC3 - Monitor de Tráfico (GUI)")
-        self.root.geometry("900x750")
+        self.root.geometry("1100x620")  # Aumentado para mejor distribución
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
@@ -34,59 +35,22 @@ class MonitorGUI:
         self.main_frame.pack(fill=tk.BOTH, expand=True)
 
         # === REDISEÑO DEL LAYOUT ===
-        # Panel superior para grid y controles
+        # Panel superior para grid y controles (ocupa toda la pantalla)
         self.top_frame = ttk.Frame(self.main_frame)
-        self.top_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.top_frame.pack(fill=tk.BOTH, expand=True)
 
         # Panel izquierdo para la grilla (5x5)
         self.grid_frame = ttk.Frame(self.top_frame)
         self.grid_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Panel derecho para los controles
+        # Panel derecho para los controles (Consola)
         self.control_frame = ttk.LabelFrame(self.top_frame, text="Consola del Operador", padding=15)
         self.control_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=10)
 
-        # Panel inferior expandible
-        self.log_frame = ttk.Frame(self.main_frame)
-        self.log_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=10)
-
-        # Componente de pestañas nativo
-        self.notebook = ttk.Notebook(self.log_frame)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
-
-        # --- Pestaña 1: Decisiones y Semáforos ---
-        self.tab_decisiones = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_decisiones, text=" Decisiones y Semáforos ")
-        
-        self.txt_decisiones = scrolledtext.ScrolledText(
-            self.tab_decisiones, height=10, bg="#1e1e1e", fg="#00ff00", font=("Consolas", 10)
-        )
-        self.txt_decisiones.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        self.txt_decisiones.configure(state='disabled')
-
-        # --- Pestaña 2: Heartbeat y Failover ---
-        self.tab_resiliencia = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_resiliencia, text=" Heartbeat y Failover ")
-        
-        self.status_header_frame = ttk.Frame(self.tab_resiliencia)
-        self.status_header_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        self.led_canvas = tk.Canvas(self.status_header_frame, width=20, height=20, bg="#f0f0f0", highlightthickness=0)
-        self.led_canvas.pack(side=tk.LEFT, padx=(0, 5))
-        self.led_circle = self.led_canvas.create_oval(2, 2, 18, 18, fill="gray")
-        
-        self.lbl_network_status = ttk.Label(self.status_header_frame, text="Iniciando estado de red...", font=('Arial', 10, 'bold'))
-        self.lbl_network_status.pack(side=tk.LEFT)
-
-        self.txt_alertas = scrolledtext.ScrolledText(
-            self.tab_resiliencia, height=8, bg="#1e1e1e", fg="#ffffff", font=("Consolas", 10)
-        )
-        self.txt_alertas.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        self.txt_alertas.configure(state='disabled')
-
-        # Variables de estado para no duplicar logs
+        # Variables de estado
         self.last_states = {}
         self.last_db_ok = None
+        self.fig_canvas = None
 
         self.cells = {}
         self.create_grid()
@@ -96,23 +60,10 @@ class MonitorGUI:
         self.update_gui()
 
     def _log_decision(self, texto):
-        self.txt_decisiones.configure(state='normal')
-        self.txt_decisiones.insert(tk.END, texto + "\n")
-        
-        # Búfer automático de 50 líneas máximo
-        lineas = int(self.txt_decisiones.index('end-1c').split('.')[0])
-        if lineas > 50:
-            self.txt_decisiones.delete('1.0', f'{lineas - 50 + 1}.0')
-            
-        self.txt_decisiones.see(tk.END)
-        self.txt_decisiones.configure(state='disabled')
+        print(f"[DECISION] {texto}")
 
     def _log_alert(self, texto):
-        self.txt_alertas.configure(state='normal')
-        ts = datetime.now().strftime('%H:%M:%S')
-        self.txt_alertas.insert(tk.END, f"[{ts}] {texto}\n")
-        self.txt_alertas.see(tk.END)
-        self.txt_alertas.configure(state='disabled')
+        print(f"[ALERTA] {texto}")
 
     def create_grid(self):
         rows = ['A', 'B', 'C', 'D', 'E']
@@ -122,23 +73,28 @@ class MonitorGUI:
             for j, c in enumerate(cols):
                 cruce = f"INT_{r}{c}"
                 
-                # Contenedor para cada intersección
-                cell = ttk.LabelFrame(self.grid_frame, text=cruce)
-                cell.grid(row=i, column=j, padx=5, pady=5, sticky="nsew")
+                # Contenedor para cada intersección (Diseño plano, relieve flat, bd=1, fondo gris neutro)
+                cell = tk.LabelFrame(
+                    self.grid_frame, text=cruce, relief="flat", bd=1, 
+                    bg="#e8e8e8", font=('Arial', 9, 'bold'), fg="#333333"
+                )
+                cell.grid(row=i, column=j, padx=8, pady=6, sticky="nsew")
 
-                # Indicador NS
-                ttk.Label(cell, text="NS:", font=('Arial', 9)).grid(row=0, column=0, padx=5, pady=5, sticky="e")
-                ns_canvas = tk.Canvas(cell, width=25, height=25, bg="gray", highlightthickness=1, highlightbackground="black")
-                ns_canvas.grid(row=0, column=1, padx=5, pady=5)
+                # Indicador NS (Círculo en Canvas)
+                tk.Label(cell, text="NS:", font=('Arial', 9), bg="#e8e8e8", fg="#333333").grid(row=0, column=0, padx=(10, 2), pady=4, sticky="e")
+                ns_canvas = tk.Canvas(cell, width=20, height=20, bg="#e8e8e8", highlightthickness=0)
+                ns_circle = ns_canvas.create_oval(2, 2, 18, 18, fill="gray", outline="#b0b0b0", width=1)
+                ns_canvas.grid(row=0, column=1, padx=5, pady=4)
                 
-                # Indicador EO
-                ttk.Label(cell, text="EO:", font=('Arial', 9)).grid(row=1, column=0, padx=5, pady=5, sticky="e")
-                eo_canvas = tk.Canvas(cell, width=25, height=25, bg="gray", highlightthickness=1, highlightbackground="black")
-                eo_canvas.grid(row=1, column=1, padx=5, pady=5)
+                # Indicador EO (Círculo en Canvas)
+                tk.Label(cell, text="EO:", font=('Arial', 9), bg="#e8e8e8", fg="#333333").grid(row=1, column=0, padx=(10, 2), pady=4, sticky="e")
+                eo_canvas = tk.Canvas(cell, width=20, height=20, bg="#e8e8e8", highlightthickness=0)
+                eo_circle = eo_canvas.create_oval(2, 2, 18, 18, fill="gray", outline="#b0b0b0", width=1)
+                eo_canvas.grid(row=1, column=1, padx=5, pady=4)
 
                 self.cells[cruce] = {
-                    "NS": ns_canvas,
-                    "EO": eo_canvas
+                    "NS": {"canvas": ns_canvas, "circle": ns_circle},
+                    "EO": {"canvas": eo_canvas, "circle": eo_circle}
                 }
                 
         # Hacer que las filas y columnas se expandan de manera uniforme
@@ -162,13 +118,30 @@ class MonitorGUI:
         self.combo_eje.pack(pady=2, fill=tk.X)
 
         btn_ola = ttk.Button(self.control_frame, text="Enviar OLA_VERDE", command=self.send_ola_verde)
-        btn_ola.pack(pady=(30, 5), fill=tk.X)
+        btn_ola.pack(pady=(20, 5), fill=tk.X)
         
         btn_normal = ttk.Button(self.control_frame, text="Forzar NORMAL", command=self.send_normal)
         btn_normal.pack(pady=5, fill=tk.X)
 
+        # Botón estilizado para Generar Reporte Visual
+        btn_reporte = ttk.Button(self.control_frame, text="Generar Reporte Visual", command=self.generar_reporte_visual)
+        btn_reporte.pack(pady=(20, 5), fill=tk.X)
+
         self.status_label = ttk.Label(self.control_frame, text="Sistema listo.", wraplength=200, foreground="blue", font=('Arial', 10))
-        self.status_label.pack(pady=30)
+        self.status_label.pack(pady=15)
+
+        # Separador y sección de Estado de Red / Failover integrada al final de la consola
+        ttk.Separator(self.control_frame, orient='horizontal').pack(fill=tk.X, pady=(20, 15))
+        
+        self.status_header_frame = ttk.Frame(self.control_frame)
+        self.status_header_frame.pack(fill=tk.X, anchor="w")
+        
+        self.led_canvas = tk.Canvas(self.status_header_frame, width=20, height=20, bg="#f0f0f0", highlightthickness=0)
+        self.led_canvas.pack(side=tk.LEFT, padx=(0, 5))
+        self.led_circle = self.led_canvas.create_oval(2, 2, 18, 18, fill="gray", outline="#7f7f7f")
+        
+        self.lbl_network_status = ttk.Label(self.status_header_frame, text="Iniciando red...", font=('Arial', 9, 'bold'))
+        self.lbl_network_status.pack(side=tk.LEFT)
 
     def send_ola_verde(self):
         self._dispatch_command("OLA_VERDE")
@@ -187,7 +160,7 @@ class MonitorGUI:
 
     def _trigger_network_error(self):
         self.led_canvas.itemconfig(self.led_circle, fill="red")
-        self.lbl_network_status.config(text="Failover Activo / Error ZMQ", foreground="red")
+        self.lbl_network_status.config(text="Failover Activo", foreground="red")
         self._log_alert("🚨 FALLO DE RED DETECTADO: PC3 fuera de línea. Failover activo en SQLite local")
         self.last_db_ok = False
 
@@ -217,7 +190,6 @@ class MonitorGUI:
             sock.close()
         except Exception as exc:
             resp = f"Error ZMQ: {exc}"
-            # Capturar timeout zmq.Again para disparar alerta de red
             if "Again" in str(type(exc)) or "Timeout" in str(exc) or "Again" in str(exc):
                 self.root.after(0, self._trigger_network_error)
             
@@ -234,23 +206,21 @@ class MonitorGUI:
         
         # Reiniciar todos los colores a neutro (gris) por defecto (SIN DATOS)
         for cruce in self.cells.values():
-            cruce["NS"].config(bg="gray")
-            cruce["EO"].config(bg="gray")
+            cruce["NS"]["canvas"].itemconfig(cruce["NS"]["circle"], fill="gray")
+            cruce["EO"]["canvas"].itemconfig(cruce["EO"]["circle"], fill="gray")
 
         # Actualizar colores con los datos reales
         for r in rows:
             posicion, estado, motivo, sensor, ts = r
             
-            # --- TAB 1: LOG DE DECISIONES Y SEMAFOROS ---
             state_key = posicion
             current_state = f"{estado}|{motivo}"
             
-            # Solo loggeamos cuando el estado o motivo de una intersección cambia
+            # Registrar decisiones en consola (stdout)
             if state_key not in self.last_states or self.last_states[state_key] != current_state:
                 log_msg = f"[{posicion}] Estado: {estado} | Motivo: {motivo} | Sensor: {sensor} | TS: {ts}"
                 self._log_decision(log_msg)
                 self.last_states[state_key] = current_state
-            # --------------------------------------------
 
             if posicion.endswith("_NS") or posicion.endswith("_EO"):
                 base = posicion[:-3]
@@ -270,27 +240,294 @@ class MonitorGUI:
                 else:
                     color = "yellow"
                     
-                self.cells[base][direccion].config(bg=color)
+                self.cells[base][direccion]["canvas"].itemconfig(self.cells[base][direccion]["circle"], fill=color)
 
-        # --- TAB 2: HEARTBEAT, RESILIENCIA Y FAILOVER ---
+        # Actualizar LED de estado de red
         db_ok = getattr(self.monitor, '_db_ok', True)
         
         if self.last_db_ok is None or self.last_db_ok != db_ok:
             if db_ok:
                 self.led_canvas.itemconfig(self.led_circle, fill="#00ff00") # Verde
-                self.lbl_network_status.config(text="Conectado / Heartbeat OK", foreground="green")
+                self.lbl_network_status.config(text="Heartbeat OK", foreground="green")
                 if self.last_db_ok is False:
-                    self._log_alert("Conexión restablecida. Sincronización automática de datos en lote completada.")
+                    self._log_alert("Conexión restablecida. Sincronización completada.")
             else:
-                self.led_canvas.itemconfig(self.led_circle, fill="#ff0000") # Rojo brillante
+                self.led_canvas.itemconfig(self.led_circle, fill="#ff0000") # Rojo
                 self.lbl_network_status.config(text="Failover Activo", foreground="red")
-                self._log_alert("🚨 FALLO DE RED DETECTADO: PC3 fuera de línea. Failover activo en SQLite local")
+                self._log_alert("🚨 FALLO DE RED DETECTADO: Failover activo en SQLite local")
             
             self.last_db_ok = db_ok
-        # ------------------------------------------------
 
         # Reprogramar la actualización en 500 ms (tasa de refresco constante)
         self.root.after(500, self.update_gui)
+
+    # ==============================================================================
+    # INTEGRACIÓN DE MATPLOTLIB (ANALÍTICA Y REPORTES)
+    # ==============================================================================
+
+    def generar_reporte_visual(self):
+        """Abre la ventana de Analítica y lanza la consulta asíncrona."""
+        if not hasattr(self, "report_win") or not self.report_win.winfo_exists():
+            self.report_win = tk.Toplevel(self.root)
+            self.report_win.title("Analítica y Reportes - Gestor Inteligente de Tráfico")
+            self.report_win.geometry("900x700")
+            self.report_win.configure(bg="#f5f5f7")
+            
+            self.lbl_report_title = tk.Label(
+                self.report_win, text="Analítica Histórica y Métricas de Desempeño", 
+                font=("Arial", 14, "bold"), bg="#f5f5f7", fg="#333333"
+            )
+            self.lbl_report_title.pack(pady=10)
+            
+            self.report_frame = tk.Frame(self.report_win, bg="#f5f5f7")
+            self.report_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=5)
+            
+            self.lbl_loading = tk.Label(
+                self.report_frame, text="Cargando y procesando datos asíncronamente...", 
+                font=("Arial", 11, "italic"), bg="#f5f5f7", fg="#666666"
+            )
+            self.lbl_loading.pack(expand=True)
+            
+            self.fig_canvas = None
+        else:
+            self.report_win.lift()
+            if hasattr(self, "lbl_loading") and self.lbl_loading.winfo_exists():
+                self.lbl_loading.pack(expand=True)
+            if self.fig_canvas and self.fig_canvas.get_tk_widget().winfo_exists():
+                self.fig_canvas.get_tk_widget().pack_forget()
+
+        cruce = self.combo_int.get()
+        eje = self.combo_eje.get()
+        posicion = f"{cruce}{eje}"
+
+        self.status_label.config(text="Generando reporte visual...", foreground="blue")
+        
+        # Ejecutar en hilo separado para no congelar la GUI ni ZMQ
+        threading.Thread(target=self._query_data_thread, args=(posicion,), daemon=True).start()
+
+    def _query_data_thread(self, posicion):
+        """Hilo de consulta SQLite y procesamiento de datos."""
+        try:
+            db_path = self.monitor._ruta_db()
+            conn = sqlite3.connect(str(db_path))
+            
+            # Auxiliar para parsear fechas
+            def parse_ts(ts_str):
+                if not ts_str:
+                    return None
+                try:
+                    return datetime.fromisoformat(ts_str)
+                except Exception:
+                    try:
+                        return datetime.strptime(ts_str.split('.')[0], "%Y-%m-%dT%H:%M:%S")
+                    except Exception:
+                        return None
+
+            # 1. Consulta para Gráfico 1 (Histórico de Congestión en Intersección seleccionada)
+            # Limitar a los últimos 200 eventos de este eje para legibilidad
+            rows_congestion = conn.execute("""
+                SELECT timestamp, tipo, datos_json, estado_trafico 
+                FROM eventos 
+                WHERE posicion = ? 
+                ORDER BY timestamp DESC 
+                LIMIT 200
+            """, (posicion,)).fetchall()
+            rows_congestion = list(reversed(rows_congestion))
+
+            # 2. Consulta para Gráfico 2 (Volumen y Latencia en bloque de tiempo de la simulación)
+            # Analizar últimos 1000 eventos globales
+            rows_performance = conn.execute("""
+                SELECT timestamp, timestamp_ingreso 
+                FROM eventos 
+                ORDER BY timestamp DESC 
+                LIMIT 1000
+            """).fetchall()
+            rows_performance = list(reversed(rows_performance))
+
+            conn.close()
+
+            # --- AGREGACIÓN GRÁFICO 1 ---
+            x_congestion = []
+            y_cola = []
+            y_conteo = []
+
+            if rows_congestion:
+                min_time = parse_ts(rows_congestion[0][0])
+                if min_time:
+                    # Agrupar en cubetas de 30 segundos
+                    buckets = {}
+                    for row in rows_congestion:
+                        ts, tipo, datos_json, estado = row
+                        dt = parse_ts(ts)
+                        if not dt:
+                            continue
+                        
+                        try:
+                            data = json.loads(datos_json)
+                        except Exception:
+                            data = {}
+
+                        offset = (dt - min_time).total_seconds()
+                        bucket_idx = int(offset // 30)
+
+                        if bucket_idx not in buckets:
+                            buckets[bucket_idx] = {
+                                "times": [],
+                                "colas": [],
+                                "conteos": []
+                            }
+                        buckets[bucket_idx]["times"].append(dt)
+                        if tipo == "camara":
+                            buckets[bucket_idx]["colas"].append(data.get("longitud_cola", 0))
+                        elif tipo == "espira":
+                            buckets[bucket_idx]["conteos"].append(data.get("conteo_vehicular", 0))
+
+                    for b_idx in sorted(buckets.keys()):
+                        b = buckets[b_idx]
+                        avg_dt = b["times"][0] + (b["times"][-1] - b["times"][0]) / 2 if len(b["times"]) > 1 else b["times"][0]
+                        x_congestion.append(avg_dt.strftime("%H:%M:%S"))
+                        y_cola.append(sum(b["colas"]) / len(b["colas"]) if b["colas"] else 0.0)
+                        y_conteo.append(sum(b["conteos"]) if b["conteos"] else 0.0)
+
+            # --- AGREGACIÓN GRÁFICO 2 ---
+            x_perf = []
+            y_volume = []
+            y_latency = []
+
+            if rows_performance:
+                min_time_all = parse_ts(rows_performance[0][0])
+                if min_time_all:
+                    perf_buckets = {}
+                    for row in rows_performance:
+                        ts_orig, ts_ing = row
+                        dt_orig = parse_ts(ts_orig)
+                        dt_ing = parse_ts(ts_ing)
+                        if not dt_orig or not dt_ing:
+                            continue
+                        
+                        # Latencia en segundos (mínimo 0.001 para robustez)
+                        latency = max(0.001, (dt_ing - dt_orig).total_seconds())
+
+                        offset = (dt_orig - min_time_all).total_seconds()
+                        b_idx = int(offset // 30)  # Bloques de 30 segundos
+
+                        if b_idx not in perf_buckets:
+                            perf_buckets[b_idx] = {
+                                "times": [],
+                                "latencies": [],
+                                "count": 0
+                            }
+                        perf_buckets[b_idx]["times"].append(dt_orig)
+                        perf_buckets[b_idx]["latencies"].append(latency)
+                        perf_buckets[b_idx]["count"] += 1
+
+                    for b_idx in sorted(perf_buckets.keys()):
+                        b = perf_buckets[b_idx]
+                        avg_dt = b["times"][0] + (b["times"][-1] - b["times"][0]) / 2 if len(b["times"]) > 1 else b["times"][0]
+                        x_perf.append(avg_dt.strftime("%H:%M:%S"))
+                        y_volume.append(b["count"])
+                        
+                        # Latencia en milisegundos
+                        avg_lat_ms = (sum(b["latencies"]) / len(b["latencies"])) * 1000
+                        y_latency.append(avg_lat_ms)
+
+            # Enviar datos calculados a la UI principal
+            self.root.after(0, lambda: self._update_charts_ui(
+                posicion, x_congestion, y_cola, y_conteo, x_perf, y_volume, y_latency
+            ))
+
+        except Exception as e:
+            print(f"[REPORTE] Error procesando reporte: {e}")
+            self.root.after(0, lambda: self.status_label.config(
+                text=f"Error en reporte: {e}", foreground="red"
+            ))
+
+    def _update_charts_ui(self, posicion, x_congestion, y_cola, y_conteo, x_perf, y_volume, y_latency):
+        """Construye y renderiza las figuras de Matplotlib en la ventana secundaria."""
+        try:
+            import matplotlib
+            matplotlib.use("TkAgg")
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+            if hasattr(self, "lbl_loading") and self.lbl_loading.winfo_exists():
+                self.lbl_loading.pack_forget()
+
+            if self.fig_canvas and self.fig_canvas.get_tk_widget().winfo_exists():
+                self.fig_canvas.get_tk_widget().destroy()
+
+            # Crear figura Matplotlib (dos filas, una columna)
+            fig = Figure(figsize=(8, 6), dpi=100)
+            fig.patch.set_facecolor("#f5f5f7")
+
+            # --- GRÁFICO 1: Histórico de Congestión ---
+            ax1 = fig.add_subplot(211)
+            ax1.set_facecolor("#ffffff")
+            ax1.grid(True, linestyle="--", alpha=0.5, color="#cccccc")
+
+            if x_congestion:
+                # Eje Y Izquierdo (Longitud de Cola - Cámara)
+                line1 = ax1.plot(x_congestion, y_cola, color="#007bff", linewidth=2, marker="o", label="Cola Promedio (Cámara)")
+                ax1.set_ylabel("Cola (Vehículos)", fontdict={"fontsize": 9}, color="#007bff")
+                ax1.tick_params(axis='y', labelcolor="#007bff", labelsize=8)
+
+                # Eje Y Derecho (Conteo - Espira)
+                ax1_sec = ax1.twinx()
+                line2 = ax1_sec.plot(x_congestion, y_conteo, color="#fd7e14", linewidth=1.5, linestyle="--", marker="s", label="Flujo (Espira)")
+                ax1_sec.set_ylabel("Vehículos/Min", fontdict={"fontsize": 9}, color="#fd7e14")
+                ax1_sec.tick_params(axis='y', labelcolor="#fd7e14", labelsize=8)
+
+                # Combinar leyendas
+                lines = line1 + line2
+                labels = [l.get_label() for l in lines]
+                ax1.legend(lines, labels, loc="upper left", fontsize=8)
+
+                ax1.set_title(f"Evolución de Tráfico en {posicion} (Intervalos de 30s)", fontdict={"fontsize": 11, "weight": "bold"}, color="#333333")
+                ax1.tick_params(axis='x', rotation=15, labelsize=8)
+            else:
+                ax1.text(0.5, 0.5, "Sin datos de eventos para este eje", ha="center", va="center")
+                ax1.set_title(f"Histórico de Tráfico en {posicion}", fontdict={"fontsize": 11, "weight": "bold"})
+
+            # --- GRÁFICO 2: Métricas de Desempeño (Volumen y Latencia) ---
+            ax2 = fig.add_subplot(212)
+            ax2.set_facecolor("#ffffff")
+            ax2.grid(True, linestyle="--", alpha=0.5, color="#cccccc")
+
+            if x_perf:
+                # Eje Y Izquierdo (Volumen de solicitudes - barras)
+                bars = ax2.bar(x_perf, y_volume, color="#28a745", alpha=0.6, width=0.4, label="Solicitudes")
+                ax2.set_ylabel("Volumen Solicitudes", fontdict={"fontsize": 9}, color="#28a745")
+                ax2.tick_params(axis='y', labelcolor="#28a745", labelsize=8)
+
+                # Eje Y Derecho (Latencia promedio - líneas)
+                ax2_sec = ax2.twinx()
+                line_lat = ax2_sec.plot(x_perf, y_latency, color="#dc3545", linewidth=2, marker="d", label="Latencia")
+                ax2_sec.set_ylabel("Latencia (ms)", fontdict={"fontsize": 9}, color="#dc3545")
+                ax2_sec.tick_params(axis='y', labelcolor="#dc3545", labelsize=8)
+
+                # Leyenda combinada
+                lines2 = [bars] + line_lat
+                labels2 = [l.get_label() for l in lines2]
+                ax2.legend(lines2, labels2, loc="upper left", fontsize=8)
+
+                ax2.set_title("Volumen y Latencia Promedio de Procesamiento (Bloques 30s)", fontdict={"fontsize": 11, "weight": "bold"}, color="#333333")
+                ax2.tick_params(axis='x', rotation=15, labelsize=8)
+            else:
+                ax2.text(0.5, 0.5, "Base de datos vacía. No hay métricas.", ha="center", va="center")
+                ax2.set_title("Rendimiento del Sistema", fontdict={"fontsize": 11, "weight": "bold"})
+
+            fig.tight_layout()
+
+            # Incrustar en Tkinter
+            self.fig_canvas = FigureCanvasTkAgg(fig, master=self.report_frame)
+            self.fig_canvas.draw()
+            self.fig_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+            self.status_label.config(text="Reporte visual generado.", foreground="green")
+
+        except Exception as exc:
+            print(f"[REPORTE] Error al renderizar gráfico: {exc}")
+            self.status_label.config(text=f"Error render: {exc}", foreground="red")
 
     def on_closing(self):
         print("\n[GUI] Cerrando ventana, deteniendo servicios...")
